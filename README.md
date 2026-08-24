@@ -122,18 +122,18 @@ they need your actual data model, not boilerplate:
   that conflict, but stands up real cert issuance/rotation for a channel whose
   only caller is the mediator container itself on a private Docker network —
   disproportionate here. The actual compensating control is network isolation
-  instead: `docker-compose.yml` binds OpenHIM's router/admin API/console ports
-  to `127.0.0.1` only (see below), so nothing outside this Docker stack can
-  reach this channel regardless of its `authType`. This holds even on a host
+  instead: whatever's running this stack (e.g. distro-tools' `openhim`
+  service fragment) binds OpenHIM's router/admin API/console ports to
+  `127.0.0.1` only, so nothing outside that Docker Compose project can reach
+  this channel regardless of its `authType`. This holds even on a host
   shared with other apps — a compromised *container* elsewhere doesn't grant
-  access to our loopback-bound ports or our `openhim` Docker network on its
-  own (each `docker compose` project gets its own isolated bridge network by
+  access to our loopback-bound ports or our instance's own Docker network on
+  its own (each Compose project gets its own isolated bridge network by
   default). Revisit this reasoning only if this host's trust model changes —
   e.g. it becomes genuinely multi-tenant with untrusted operators, or any
   co-located app runs with `network_mode: host` or gets explicitly connected
-  to this stack's `openhim` network. A PIH-controlled shared host running
-  other PIH apps under normal Docker Compose isolation doesn't change this
-  calculus.
+  to this instance's network. A PIH-controlled shared host running other PIH
+  apps under normal Docker Compose isolation doesn't change this calculus.
 
 ## Step you still need to do on the OpenMRS side
 
@@ -166,14 +166,15 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
     success; `401 { status: 'error', message: 'unauthorized' }` if either
     header is missing/wrong; `502 { status: 'error', message }` if the relay
     to AdvaPACS itself fails (e.g. patient resolution, AdvaPACS validation).
-  - **Port/scheme**: if OpenMRS and this mediator stack are on the same
-    Docker network (or otherwise mutually trusted), plain HTTP on port `5001`
-    (default — see `OPENHIM_ROUTER_HTTP_HOST_PORT` in `.env` if overridden)
-    is fine. If OpenMRS is on a different, less-trusted host, use HTTPS on
-    port `5000` (default — `OPENHIM_ROUTER_HTTPS_HOST_PORT`) instead — `5001`
-    is plain HTTP and would send the credentials above in cleartext across
-    that network. See the Docker Compose section below for what changes on
-    this side to support that.
+  - **Port/scheme**: if OpenMRS and this mediator are on the same Docker
+    network (or otherwise mutually trusted), plain HTTP on port `5001`
+    (default — see `OPENHIM_ROUTER_HTTP_HOST_PORT` in whatever's running the
+    `openhim` service, e.g. a distro-tools instance's `env` file, if
+    overridden) is fine. If OpenMRS is on a different, less-trusted host, use
+    HTTPS on port `5000` (default — `OPENHIM_ROUTER_HTTPS_HOST_PORT`) instead
+    — `5001` is plain HTTP and would send the credentials above in cleartext
+    across that network. See "Running the full stack locally" below for what
+    changes on this side to support that.
 - **`poll`** (needs no OpenMRS-side change): `src/lib/orderPoller.js` already
   implements this — it calls
   `GET {OPENMRS_BASE_URL}/ws/fhir2/R4/ServiceRequest?_lastUpdated=gt...`
@@ -186,154 +187,66 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
   endpoint's `metadata`) — this poller intentionally doesn't filter by
   `status` for that reason.
 
-## Running with Docker Compose (recommended)
+## Running the full stack locally (via distro-tools)
+
+This repo only builds and publishes the mediator's own image
+(`partnersinhealth/omrs-advapacs-mediator` — see `Dockerfile` and
+`.github/workflows/ci.yml`); it doesn't bundle OpenHIM itself. To run the
+whole stack (OpenHIM + this mediator, optionally alongside OpenMRS too), use
+[`openmrs-contrib-distro-tools`](https://github.com/PIH/openmrs-contrib-distro-tools),
+which has canonical service fragments for both (`docker/services/openhim.yaml`
+and `docker/services/openmrs-advapacs-mediator.yaml`):
 
 ```bash
-cp .env.example .env      # fill in real credentials
-docker compose up --build -d
+export OPENHIM_PASSWORD=<pick-a-password>
+export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
+export OPENMRS_BASE_URL=<your OpenMRS FHIR base URL>
+export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
+export ADVAPACS_CLIENT_ID=<...>
+export ADVAPACS_CLIENT_SECRET=<...>
+# to build this mediator's image from a local checkout instead of pulling
+# the published one, also set:
+export ADVAPACS_MEDIATOR_SOURCE_DIR=<path to this repo>
+
+SERVICES=openhim,openmrs-advapacs-mediator openmrs-docker create <name> --build
+openmrs-docker <name> start
 ```
 
-Brings up four containers on one `openhim` network: `mongo-db`,
-`openhim-core` (API on `localhost:8081`, router on `5000`/`5001`),
-`openhim-console` (`localhost:9000`), and this mediator
-(`openmrs-advapacs-mediator`, built from the repo's `Dockerfile`). A one-shot
-`openhim-setup` service runs `scripts/setupOpenhim.js` to idempotently create
-the two order-push channels and the `openmrs` OpenHIM Client the inbound
-channel's `authType: "private"` requires (channels/clients aren't auto-created
-from mediator registration — that only happens if you explicitly run this
-script or import `mediatorConfig.json`'s `defaultChannelConfig` by hand).
+See distro-tools' own README for the full `env` file reference — every
+`OPENHIM_*`/`ADVAPACS_MEDIATOR_*`/`OPENMRS_*`/`ADVAPACS_*` var this fragment
+reads, including the four `OPENHIM_*_HOST_PORT` overrides for the loopback
+ports below — plus the lifecycle commands (`start`/`stop`/`status`/`logs`/
+`update`/`add-service`/`remove-service`/`destroy`) that apply to this stack
+the same way they do to any other distro-tools-managed service.
 
-**All four port numbers above are just defaults, overridable via `.env`**
-(`OPENHIM_ADMIN_API_HOST_PORT`, `OPENHIM_ROUTER_HTTPS_HOST_PORT`,
-`OPENHIM_ROUTER_HTTP_HOST_PORT`, `OPENHIM_CONSOLE_HOST_PORT`) — useful on a
-shared host running other dockerized apps, if one of these collides with a
-port something else already uses. Only the host-published side changes; this
-repo's own code always talks to OpenHIM over the internal Docker network
-(fixed hostnames/ports), never these. If you override one, also update
-`OPENHIM_API_URL`/`OPENHIM_ROUTER_URL`/`ADVAPACS_CHANNEL_URL` in `.env` to
-match — they're not auto-derived from these new vars.
-
-All four host-published ports above (`8081`, `9000`, `5000`, `5001` by
-default) are bound to `127.0.0.1` only, not `0.0.0.0` — reachable from this
-host (or an SSH tunnel) for debugging/console access, not from the LAN or
-internet. Nothing outside this Docker stack needs them in `poll` mode: both
-`orderPoller.js` and `advapacsClient.js` already reach OpenHIM over the
-internal `openhim` network. If `push` mode is used with OpenMRS on a
-different host, the HTTPS port (default `5000` — not `5001`, see below)
-should be the one re-published on a real interface, scoped/firewalled to
-that specific host. Keep the HTTP port (`5001`) loopback-only even then.
-
-**Router traffic (`5001` by default) is plain HTTP, not HTTPS** — deliberately, not an
-oversight. This means the Basic Auth credentials `orderPoller.js` sends to the
-inbound channel travel as cleartext-equivalent base64, not encrypted. Accepted
-as-is since this traffic never leaves the Docker network or a loopback-bound
-host port (see above) — only the admin API (`8081`) uses HTTPS today. OpenHIM
-core's router also listens on `5000` for HTTPS by default (same self-signed
-cert as the admin API, currently unused) — use that instead of `5001` the
-moment real router traffic (e.g. a `push`-mode OpenMRS module) crosses a
-network segment broader than this Docker stack's own.
-
-- `OPENMRS_BASE_URL` is read from `.env` here, same as elsewhere in the app —
-  it's not hardcoded to any particular OpenMRS location. If OpenMRS runs on
-  this same host, set it to `http://host.docker.internal:8080/openmrs`, not
-  `localhost` (inside the mediator's container, `localhost` means the
-  container itself). `host.docker.internal` is wired up via `extra_hosts` in
-  `docker-compose.yml` — Linux needs Docker Engine 20.10+ for the
-  `host-gateway` special value. If OpenMRS runs elsewhere, just point
-  `OPENMRS_BASE_URL` at its real address instead.
-- **First run on a fresh Mongo volume**: OpenHIM core auto-seeds a
-  `root@openhim.org` user with its built-in default password
-  `openhim-password`, regardless of whatever's set in `.env`'s
-  `OPENHIM_PASSWORD`. `scripts/setupOpenhim.js` self-heals this automatically —
-  it tries `.env`'s credentials first, and if those don't work yet, falls back
-  to the known default, then rotates the account's password to match `.env`.
-  No manual console step needed.
-- This is a separate, self-contained compose stack from any other
-  standalone OpenHIM instance you may have running elsewhere — it uses the
-  same container names/ports (`8081`, `9000`, `5000`-`5001` by default), so
-  stop any other instance first, or override the port vars above instead.
-
-## Administering the server
-
-Once this is running somewhere other than your own laptop (e.g. a CI server),
-here's how to operate it day to day.
-
-**Status**: `docker compose ps`. Only `openhim-core` and `openhim-console`
-have a Docker `healthcheck:`, so those two show `(healthy)`/`(unhealthy)`;
-`openmrs-advapacs-mediator` and `mongo-db` will only ever show the plain
-container state (`running`, `exited`, ...) — don't wait for a "healthy"
-mediator, it doesn't report one.
-
-**Stopping — three different levels, not interchangeable**:
-- `docker compose stop` — stops all containers, keeps them and all data
-  intact. `docker compose start` resumes exactly where it left off.
-- `docker compose down` — removes the containers and network, but keeps the
-  `mongo-data` volume, so OpenHIM's registered channels/clients and its
-  transaction history survive a `docker compose up -d` afterward.
-- `docker compose down -v` — also deletes the `mongo-data` volume.
-  **Destructive** — resets OpenHIM back to a completely fresh, unregistered
-  state (this is how the admin-password self-heal behavior above was tested).
-  Only do this deliberately.
-
-**Picking up a code change**: a plain restart reuses the old image — you need
-to rebuild first:
-```bash
-docker compose build openmrs-advapacs-mediator
-docker compose up -d --force-recreate openmrs-advapacs-mediator
-```
-
-**Picking up a config change** (edited `mediatorConfig.json`, or changed an
-env var that affects channel/client setup, e.g. `ADVAPACS_BASE_URL` or
-`OPENHIM_INBOUND_CLIENT_*`): rerun the one-shot setup script —
-```bash
-docker compose run --rm openhim-setup
-```
-It idempotently upserts channels/clients and self-heals the admin password
-(see above) — safe to run any time, not just after a fresh volume.
-
-**Container logs** (each service's stdout/stderr — startup messages, this
-app's own request handling, etc.):
-```bash
-docker compose logs -f openmrs-advapacs-mediator   # follow one service
-docker compose logs --tail=50 openhim-core          # last 50 lines of another
-docker compose logs                                 # everything
-```
-The five services are `mongo-db`, `openhim-core`, `openhim-console`,
-`openmrs-advapacs-mediator`, and the one-shot `openhim-setup` (which has no
-fixed `container_name`, so `docker compose ps`/`logs` refer to it by a
-compose-generated name like `omrs-advapacs-mediator-openhim-setup-1`). The
-mediator's own lines are winston JSON (`{"level":...,"message":...,"timestamp":...}`),
-verbosity controlled by `.env`'s `LOG_LEVEL`.
-
-**OpenHIM's transaction log — a different thing from container logs.** This
-is the actual FHIR request/response history for every push through the two
-channels (what's been used all through this project's development to debug
-real order-push/AdvaPACS traffic) — persisted in Mongo, not visible via
-`docker compose logs` at all. Two ways to see it (`8081`/`9000` are the
-defaults — substitute your own if you overrode
-`OPENHIM_ADMIN_API_HOST_PORT`/`OPENHIM_CONSOLE_HOST_PORT`):
-- Console UI: `http://127.0.0.1:9000`, log in with `.env`'s
-  `OPENHIM_USERNAME`/`OPENHIM_PASSWORD`.
-- Admin API directly:
+Once it's up:
+- **Console UI**: `http://127.0.0.1:9000` (or whatever `OPENHIM_CONSOLE_HOST_PORT`
+  you set), log in with `OPENHIM_USERNAME`/`OPENHIM_PASSWORD`.
+- **Admin API**: `https://127.0.0.1:8081` (`OPENHIM_ADMIN_API_HOST_PORT`).
+  Both are bound to `127.0.0.1` only by the `openhim` fragment, not reachable
+  from the LAN/internet — use an SSH tunnel (`ssh -L 8081:127.0.0.1:8081 -L
+  9000:127.0.0.1:9000 <user>@<server>`) if this is running somewhere other
+  than your own machine.
+- **OpenHIM's transaction log** (the actual FHIR request/response history for
+  every push through the two channels) lives in the console UI above, or the
+  admin API directly:
   ```bash
   curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
     'https://127.0.0.1:8081/transactions?filterLimit=10&filterPage=0'   # list
   curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
     'https://127.0.0.1:8081/transactions/<id>'                          # one transaction's full bodies
   ```
-  (`-k` skips certificate validation for OpenHIM's self-signed cert — the same
-  thing `OPENHIM_TRUST_SELF_SIGNED=true` does for the app itself.)
-
-**Reaching any of this on a remote server**: every admin-facing port (`8081`,
-`9000`, `5000`, `5001` by default) is deliberately bound to `127.0.0.1` only
-(see above), so none of it is reachable directly from your own machine once
-this runs somewhere other than localhost. Use an SSH tunnel instead (adjust
-the port numbers if you overrode any of them):
-```bash
-ssh -L 8081:127.0.0.1:8081 -L 9000:127.0.0.1:9000 <user>@<server>
-```
-then browse/curl `127.0.0.1:8081` and `127.0.0.1:9000` on your own machine
-exactly as if you were on the server itself.
+- **Channel/client provisioning** (this mediator's `scripts/setupOpenhim.js`)
+  now runs automatically on every boot of the mediator container — no
+  separate one-shot step. See "Running registered with OpenHIM core (no
+  Docker)" below for exactly what it does and how to re-run it on demand.
+- **First run on a fresh instance**: OpenHIM core auto-seeds a
+  `root@openhim.org` user with its built-in default password
+  `openhim-password`, regardless of whatever `OPENHIM_PASSWORD` you set.
+  `scripts/setupOpenhim.js` self-heals this automatically — it tries your
+  configured credentials first, and if those don't work yet, falls back to
+  the known default, then rotates the account's password to match. No manual
+  console step needed.
 
 ## Running locally without OpenHIM core
 
@@ -351,8 +264,8 @@ Since this runs directly on the host (not in a container), `OPENMRS_BASE_URL`
 needs a value reachable from the host itself — `http://localhost:8080/openmrs`
 if OpenMRS is local, not `http://host.docker.internal:...` (that hostname only
 resolves inside a Docker container). If you're switching between this and the
-Docker Compose flow above with OpenMRS on the same machine, you'll need to
-change this value each time.
+distro-tools-based flow above with OpenMRS on the same machine, you'll need
+to change this value each time.
 
 ## Running registered with OpenHIM core (no Docker)
 
@@ -363,13 +276,17 @@ npm start
 ```
 
 On startup the mediator registers itself and `mediatorConfig.json` with
-OpenHIM core and activates its heartbeat. (It used to also register a FHIR
-`Subscription` with AdvaPACS pointed at its own webhook URL on startup, but
-that's currently disabled along with the rest of the result-delivery path —
-see Known limitations.) You'd still need to run `node scripts/setupOpenhim.js`
-yourself (once) to create the two order-push channels, and make sure
+OpenHIM core, activates its heartbeat, then automatically runs
+`scripts/setupOpenhim.js` to create/update the two order-push channels and
+the `openmrs` OpenHIM Client (idempotent, so it's safe on every boot — a
+failure here only logs a warning rather than stopping the mediator). (It
+used to also register a FHIR `Subscription` with AdvaPACS pointed at its own
+webhook URL on startup, but that's currently disabled along with the rest of
+the result-delivery path — see Known limitations.) Make sure
 `OPENHIM_ROUTER_URL`/`ADVAPACS_CHANNEL_URL` in `.env` point at wherever that
-OpenHIM instance's router actually is.
+OpenHIM instance's router actually is. To force a re-provision without
+restarting the mediator (e.g. after only changing `mediatorConfig.json` or
+`ADVAPACS_BASE_URL`), run `node scripts/setupOpenhim.js` directly.
 
 ## Running tests
 
@@ -390,10 +307,9 @@ testable seam without a refactor) or `subscriptionWebhook.js` — see
 
 ```
 mediatorConfig.json         OpenHIM mediator registration (endpoints, channels, config defs)
-scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels + the "openmrs" OpenHIM Client via OpenHIM's API; self-heals a fresh volume's default admin password to match .env
+scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels + the "openmrs" OpenHIM Client via OpenHIM's API; self-heals a fresh volume's default admin password to match .env; run automatically by src/index.js on every boot, or standalone via `node scripts/setupOpenhim.js`
 Dockerfile                  Mediator's own container image
-docker-compose.yml          Full local stack: mongo, openhim-core, openhim-console, mediator, one-shot channel setup
-src/index.js                Registration + server bootstrap; always mounts the push endpoint, additionally starts the poller in 'poll' mode
+src/index.js                Registration + server bootstrap + OpenHIM provisioning; always mounts the push endpoint, additionally starts the poller in 'poll' mode
 src/lib/openmrsClient.js    OpenMRS FHIR2 client (read/search ServiceRequest/Patient, write results)
 src/lib/advapacsClient.js   Calls OpenHIM's outbound channel (ADVAPACS_CHANNEL_URL), not AdvaPACS directly; upsertPatient + createServiceRequest (+ ensureSubscription, currently unused -- see Known limitations)
 src/lib/orderRelay.js       Shared order-relay logic: upserts Patient first, then remaps ServiceRequest.subject to AdvaPACS's own Patient id and reshapes the rest of the ServiceRequest for AdvaPACS before pushing it

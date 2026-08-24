@@ -7,7 +7,7 @@ const mediatorConfig = require('../mediatorConfig.json');
 // Channels aren't auto-created when the mediator registers -- OpenHIM only
 // stores mediatorConfig.json's defaultChannelConfig as a console-importable
 // suggestion. This script actually creates/updates them via the admin API so
-// `docker compose up` produces a working setup, not just documentation.
+// to produce a working setup.
 const CHANNEL_NAMES = [
   'OpenMRS to Mediator Order Push',
   'Mediator to AdvaPACS Order Push'
@@ -52,8 +52,9 @@ const api = axios.create({
 });
 
 // Defensive: don't trust compose healthcheck timing alone (the reference
-// healthcheck this project is modeled on was silently broken -- see
-// docker-compose.yml) -- poll the admin API directly until it responds.
+// healthcheck this project is modeled on was silently broken -- see the
+// openhim service fragment in distro-tools) -- poll the admin API directly
+// until it responds.
 async function waitForOpenhim(retries = 30, delayMs = 2000) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -178,7 +179,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Failed to set up OpenHIM channels:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Failed to set up OpenHIM channels:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { main };

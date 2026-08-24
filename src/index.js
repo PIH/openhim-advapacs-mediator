@@ -6,6 +6,7 @@ const medUtils = require('openhim-mediator-utils').default;
 const logger = require('./lib/logger');
 const orderPoller = require('./lib/orderPoller');
 const mediatorConfig = require('../mediatorConfig.json');
+const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
 // DISABLED (for now): the AdvaPACS result-delivery path (routes/subscriptionWebhook.js
@@ -58,7 +59,17 @@ async function registerAndStart() {
     medUtils.activateHeartbeat(openhimConfig);
     logger.info('Registered with OpenHIM core and activated heartbeat');
 
-    startServer();
+    // Provisions the AdvaPACS-specific channels/client via the admin API --
+    // registerMediator above only stores mediatorConfig.json's
+    // defaultChannelConfig as a console-importable suggestion, it doesn't
+    // create anything. Non-fatal on failure and re-run on every boot
+    // (idempotent) so a transient admin-API hiccup doesn't crash-loop the
+    // whole mediator -- it'll just retry next restart, or can be re-run
+    // on demand via `node scripts/setupOpenhim.js`.
+    setupOpenhim()
+      .then(() => logger.info('OpenHIM channels/clients provisioned'))
+      .catch((err) => logger.warn('Failed to provision OpenHIM channels/clients -- continuing startup', { error: err.message }))
+      .finally(() => startServer());
 
     // DISABLED (for now) -- see the commented-out require above. This was
     // also the source of the "Could not confirm AdvaPACS subscription on
