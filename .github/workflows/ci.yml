@@ -35,4 +35,4 @@ jobs:
           context: .
           push: true
           tags: |
-            partnersinhealth/omrs-advapacs-mediator:latest
+            partnersinhealth/openhim-advapacs-mediator:latest

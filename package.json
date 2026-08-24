@@ -1,5 +1,5 @@
 {
-  "name": "omrs-openhim-advapacs",
+  "name": "openhim-advapacs-mediator",
   "version": "0.1.0",
   "description": "OpenHIM mediator routing radiology ServiceRequests between OpenMRS and AdvaPACS as FHIR resources.",
   "main": "src/index.js",

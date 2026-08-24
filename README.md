@@ -190,7 +190,7 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
 ## Running the full stack locally (via distro-tools)
 
 This repo only builds and publishes the mediator's own image
-(`partnersinhealth/omrs-advapacs-mediator` — see `Dockerfile` and
+(`partnersinhealth/openhim-advapacs-mediator` — see `Dockerfile` and
 `.github/workflows/ci.yml`); it doesn't bundle OpenHIM itself. To run the
 whole stack (OpenHIM + this mediator, optionally alongside OpenMRS too), use
 [`openmrs-contrib-distro-tools`](https://github.com/PIH/openmrs-contrib-distro-tools),
