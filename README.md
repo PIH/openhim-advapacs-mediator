@@ -187,6 +187,19 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
   endpoint's `metadata`) — this poller intentionally doesn't filter by
   `status` for that reason.
 
+## Building the mediator image locally
+
+```bash
+./build-image.sh
+```
+
+Runs `npm test` first (aborting with no build on failure), then builds this
+repo's `Dockerfile` into your local Docker image cache, tagged
+`openhim-advapacs-mediator:local` by default (pass a different tag as `$1`).
+Nothing is pushed anywhere. This just produces the image — it doesn't run or
+register it against OpenHIM; see "Running the full stack locally" below for
+that.
+
 ## Running the full stack locally (via distro-tools)
 
 This repo only builds and publishes the mediator's own image
@@ -243,10 +256,8 @@ Once it's up:
 - **First run on a fresh instance**: OpenHIM core auto-seeds a
   `root@openhim.org` user with its built-in default password
   `openhim-password`, regardless of whatever `OPENHIM_PASSWORD` you set.
-  `scripts/setupOpenhim.js` self-heals this automatically — it tries your
-  configured credentials first, and if those don't work yet, falls back to
-  the known default, then rotates the account's password to match. No manual
-  console step needed.
+  `scripts/setupOpenhim.js` no longer rotates this itself — that's handled by
+  distro-tools now.
 
 ## Running locally without OpenHIM core
 
@@ -307,7 +318,8 @@ testable seam without a refactor) or `subscriptionWebhook.js` — see
 
 ```
 mediatorConfig.json         OpenHIM mediator registration (endpoints, channels, config defs)
-scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels + the "openmrs" OpenHIM Client via OpenHIM's API; self-heals a fresh volume's default admin password to match .env; run automatically by src/index.js on every boot, or standalone via `node scripts/setupOpenhim.js`
+scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels + the "openmrs" OpenHIM Client via OpenHIM's API; run automatically by src/index.js on every boot, or standalone via `node scripts/setupOpenhim.js`
+build-image.sh              Runs npm test, then builds this repo's Dockerfile into the local Docker image cache (no registry) -- see "Building the mediator image locally"
 Dockerfile                  Mediator's own container image
 src/index.js                Registration + server bootstrap + OpenHIM provisioning; always mounts the push endpoint, additionally starts the poller in 'poll' mode
 src/lib/openmrsClient.js    OpenMRS FHIR2 client (read/search ServiceRequest/Patient, write results)

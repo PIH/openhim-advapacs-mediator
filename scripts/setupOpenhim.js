@@ -107,45 +107,6 @@ async function upsertClient(clientDef) {
   }
 }
 
-// A fresh OpenHIM Mongo volume always seeds root@openhim.org with this known
-// default, regardless of .env's OPENHIM_PASSWORD -- so a strong password set
-// in .env before first boot would otherwise break every subsequent script run
-// until someone manually fixes it via the console. Self-heals by rotating the
-// account to match .env the first time it detects the mismatch.
-const DEFAULT_ADMIN_PASSWORD = 'openhim-password';
-
-async function rotateDefaultAdminPassword() {
-  const email = process.env.OPENHIM_USERNAME;
-  const targetPassword = process.env.OPENHIM_PASSWORD;
-
-  if (!targetPassword) {
-    console.warn('OPENHIM_PASSWORD is not set -- skipping admin password rotation.');
-    return;
-  }
-
-  try {
-    await api.get('/users');
-    return; // .env credentials already work -- nothing to rotate.
-  } catch (err) {
-    if (!err.response || err.response.status !== 401) throw err;
-  }
-
-  // .env's credentials didn't work -- try the known fresh-volume default, and
-  // if that works, rotate the account's password to match .env. OpenHIM's
-  // Users API takes the plaintext password directly (hashed server-side) and
-  // expects the full user document back, not a sparse patch -- read first.
-  const defaultAuthApi = axios.create({
-    baseURL: process.env.OPENHIM_API_URL,
-    auth: { username: email, password: DEFAULT_ADMIN_PASSWORD },
-    httpsAgent: new https.Agent({ rejectUnauthorized: process.env.OPENHIM_TRUST_SELF_SIGNED !== 'true' })
-  });
-
-  const { data: existing } = await defaultAuthApi.get(`/users/${encodeURIComponent(email)}`);
-  const { _id, ...userData } = existing;
-  await defaultAuthApi.put(`/users/${encodeURIComponent(email)}`, { ...userData, password: targetPassword });
-  console.log(`Rotated OpenHIM admin password for ${email} to match .env`);
-}
-
 async function upsertChannel(channelDef) {
   // channelDef's autoRetryEnabled/autoRetryPeriodMinutes/autoRetryMaxAttempts
   // (set in mediatorConfig.json's defaultChannelConfig) only cover connection
@@ -169,7 +130,6 @@ async function upsertChannel(channelDef) {
 
 async function main() {
   await waitForOpenhim();
-  await rotateDefaultAdminPassword();
   await upsertClient(buildInboundClient());
   const channels = mediatorConfig.defaultChannelConfig
     .filter((c) => CHANNEL_NAMES.includes(c.name))
