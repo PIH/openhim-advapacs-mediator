@@ -267,15 +267,16 @@ openmrs-sdk run <server-id>   # leave this running in its own terminal --
 # 2. Separately, bring up just OpenHIM + this mediator via distro-tools,
 #    pointed at that host-based OpenMRS instance:
 export OPENHIM_PASSWORD=<pick-a-password>
-export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
-export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
 export OPENMRS_USERNAME=<username the mediator uses against OpenMRS's FHIR API>
 export OPENMRS_PASSWORD=<password the mediator uses against OpenMRS's FHIR API>
-export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
+export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
+export ADVAPACS_MEDIATOR_OPENHIM_INBOUND_CLIENT_PASSWORD=<pick-a-password>
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
-
-SERVICES=openhim,openmrs-advapacs-mediator openmrs-docker create <name>
+export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
+export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
+export SERVICES=openhim,openmrs-advapacs-mediator 
+openmrs-docker create <name>
 openmrs-docker <name> start
 ```
 
