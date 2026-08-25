@@ -20,7 +20,7 @@
       "routes": [
         {
           "name": "OpenMRS-AdvaPACS FHIR Mediator route",
-          "host": "openmrs-advapacs-mediator",
+          "host": "openhim-advapacs-mediator",
           "port": 3500,
           "primary": true,
           "type": "http"

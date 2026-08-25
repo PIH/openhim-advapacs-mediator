@@ -93,7 +93,7 @@ describe('advapacsClient', () => {
     expect(mockClient.post).toHaveBeenCalledWith('/Subscription', {
       resourceType: 'Subscription',
       status: 'active',
-      reason: 'openmrs-advapacs-mediator result delivery',
+      reason: 'openhim-advapacs-mediator result delivery',
       criteria: 'ImagingStudy',
       channel: {
         type: 'rest-hook',

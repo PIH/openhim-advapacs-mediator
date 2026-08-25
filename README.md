@@ -208,7 +208,7 @@ This repo only builds and publishes the mediator's own image
 whole stack (OpenHIM + this mediator, optionally alongside OpenMRS too), use
 [`openmrs-contrib-distro-tools`](https://github.com/PIH/openmrs-contrib-distro-tools),
 which has canonical service fragments for both (`docker/services/openhim.yaml`
-and `docker/services/openmrs-advapacs-mediator.yaml`). See distro-tools' own
+and `docker/services/openhim-advapacs-mediator.yaml`). See distro-tools' own
 README for the full `env` file reference — every
 `OPENHIM_*`/`ADVAPACS_MEDIATOR_*`/`OPENMRS_*`/`ADVAPACS_*` var either fragment
 reads, including the four `OPENHIM_*_HOST_PORT` overrides for the loopback
@@ -221,7 +221,7 @@ There are two ways to get an OpenMRS instance into the picture:
 ### Bundled with OpenMRS
 
 Add distro-tools' `openmrs-db`/`openmrs` fragments to `SERVICES` alongside
-`openhim`/`openmrs-advapacs-mediator`, and it stands up all four as one
+`openhim`/`openhim-advapacs-mediator`, and it stands up all four as one
 Compose project on a shared network — the mediator's default
 `OPENMRS_BASE_URL` (`http://openmrs:8080/openmrs`) already points at that
 network's `openmrs` service, so you don't need to set it yourself:
@@ -238,7 +238,7 @@ export ADVAPACS_MEDIATOR_OPENHIM_INBOUND_CLIENT_PASSWORD=<pick-a-password>
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
-export SERVICES=openmrs-db,openmrs,openhim,openmrs-advapacs-mediator 
+export SERVICES=openmrs-db,openmrs,openhim,openhim-advapacs-mediator 
 
 openmrs-docker create <name>
 openmrs-docker <name> initialize   # optional, only if SEED_IMAGE_NAME is set -- skips the slow first boot
@@ -275,7 +275,7 @@ export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
 export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
-export SERVICES=openhim,openmrs-advapacs-mediator 
+export SERVICES=openhim,openhim-advapacs-mediator 
 openmrs-docker create <name>
 openmrs-docker <name> start
 ```
@@ -289,12 +289,12 @@ default `8080`, adjust the port to match.
 ### Rebuilding and redeploying after a code change
 
 Build this repo's Dockerfile locally, tagged to match what your running
-instance's fragment expects -- partnersinhealth/omrs-advapacs-mediator:latest
+instance's fragment expects -- partnersinhealth/openhim-advapacs-mediator:latest
 
 ```bash
-./build-image.sh partnersinhealth/omrs-advapacs-mediator:latest
+./build-image.sh partnersinhealth/openhim-advapacs-mediator:latest
 openmrs-docker <name> start
-openmrs-docker <name> logs openmrs-advapacs-mediator   # confirm clean restart
+openmrs-docker <name> logs openhim-advapacs-mediator   # confirm clean restart
 ```
 
 ### Monitoring the stack

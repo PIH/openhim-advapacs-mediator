@@ -74,7 +74,7 @@ async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'Imaging
   const subscription = {
     resourceType: 'Subscription',
     status: 'active',
-    reason: 'openmrs-advapacs-mediator result delivery',
+    reason: 'openhim-advapacs-mediator result delivery',
     criteria,
     channel: {
       type: 'rest-hook',
