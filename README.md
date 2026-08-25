@@ -231,14 +231,16 @@ export OPENMRS_IMAGE_NAME=<your OpenMRS distro image, e.g. partnersinhealth/leso
 export OPENMRS_PIH_CONFIG=<PIH config profile for this instance, e.g. lesotho,lesotho-kol-ci>
 export SEED_IMAGE_NAME=<optional -- a nightly seed image, to skip a slow first boot>
 export OPENHIM_PASSWORD=<pick-a-password>
-export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
 export OPENMRS_USERNAME=<username the mediator uses against OpenMRS's FHIR API>
 export OPENMRS_PASSWORD=<password the mediator uses against OpenMRS's FHIR API>
-export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
+export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
+export ADVAPACS_MEDIATOR_OPENHIM_INBOUND_CLIENT_PASSWORD=<pick-a-password>
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
+export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
+export SERVICES=openmrs-db,openmrs,openhim,openmrs-advapacs-mediator 
 
-SERVICES=openmrs-db,openmrs,openhim,openmrs-advapacs-mediator openmrs-docker create <name>
+openmrs-docker create <name>
 openmrs-docker <name> initialize   # optional, only if SEED_IMAGE_NAME is set -- skips the slow first boot
 openmrs-docker <name> start
 openmrs-docker <name> wait         # blocks until OpenMRS itself finishes starting
@@ -283,8 +285,21 @@ container — the fragment's `extra_hosts` entry makes `host.docker.internal`
 resolve back to this machine. If the SDK server's `SERVER_PORT` isn't the
 default `8080`, adjust the port to match.
 
+### Rebuilding and redeploying after a code change
+
+Build this repo's Dockerfile locally, tagged to match what your running
+instance's fragment expects -- partnersinhealth/omrs-advapacs-mediator:latest
+
+```bash
+./build-image.sh partnersinhealth/omrs-advapacs-mediator:latest
+openmrs-docker <name> start
+openmrs-docker <name> logs openmrs-advapacs-mediator   # confirm clean restart
+```
+
+### Monitoring the stack
+
 Once it's up (either way):
-- **Console UI**: `http://127.0.0.1:9000` (or whatever `OPENHIM_CONSOLE_HOST_PORT`
+- **Console UI**: `http://localhost:9000` (or whatever `OPENHIM_CONSOLE_HOST_PORT`
   you set), log in with `OPENHIM_USERNAME`/`OPENHIM_PASSWORD`.
 - **Admin API**: `https://127.0.0.1:8081` (`OPENHIM_ADMIN_API_HOST_PORT`).
   Both are bound to `127.0.0.1` only by the `openhim` fragment, not reachable
@@ -296,9 +311,9 @@ Once it's up (either way):
   admin API directly:
   ```bash
   curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
-    'https://127.0.0.1:8081/transactions?filterLimit=10&filterPage=0'   # list
+    'https://localhost:8081/transactions?filterLimit=10&filterPage=0'   # list
   curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
-    'https://127.0.0.1:8081/transactions/<id>'                          # one transaction's full bodies
+    'https://localhost:8081/transactions/<id>'                          # one transaction's full bodies
   ```
 - **Channel/client provisioning**: on startup the mediator registers itself
   and `mediatorConfig.json` with OpenHIM core, activates its heartbeat, then
@@ -313,21 +328,6 @@ Once it's up (either way):
 - **First run on a fresh instance**: OpenHIM core auto-seeds a
   `root@openhim.org` user with its built-in default password
   `openhim-password`, regardless of whatever `OPENHIM_PASSWORD` you set.
-  `scripts/setupOpenhim.js` no longer rotates this itself — that's handled by
-  distro-tools now.
-
-## Rebuilding and redeploying after a code change
-
-```bash
-# Build this repo's Dockerfile locally, tagged to match what your running
-# instance's fragment expects -- partnersinhealth/omrs-advapacs-mediator:latest
-# unless you overrode ADVAPACS_MEDIATOR_IMAGE_NAME/ADVAPACS_MEDIATOR_IMAGE_TAG
-# in the instance's env file, in which case tag it to match those instead.
-./build-image.sh partnersinhealth/omrs-advapacs-mediator:latest
-
-openmrs-docker <name> start
-openmrs-docker <name> logs openmrs-advapacs-mediator   # confirm clean restart
-```
 
 ## Running tests
 
