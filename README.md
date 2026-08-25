@@ -217,11 +217,8 @@ export OPENMRS_BASE_URL=<your OpenMRS FHIR base URL>
 export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
-# to build this mediator's image from a local checkout instead of pulling
-# the published one, also set:
-export ADVAPACS_MEDIATOR_SOURCE_DIR=<path to this repo>
 
-SERVICES=openhim,openmrs-advapacs-mediator openmrs-docker create <name> --build
+SERVICES=openhim,openmrs-advapacs-mediator openmrs-docker create <name>
 openmrs-docker <name> start
 ```
 
@@ -249,55 +246,39 @@ Once it's up:
   curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
     'https://127.0.0.1:8081/transactions/<id>'                          # one transaction's full bodies
   ```
-- **Channel/client provisioning** (this mediator's `scripts/setupOpenhim.js`)
-  now runs automatically on every boot of the mediator container — no
-  separate one-shot step. See "Running registered with OpenHIM core (no
-  Docker)" below for exactly what it does and how to re-run it on demand.
+- **Channel/client provisioning**: on startup the mediator registers itself
+  and `mediatorConfig.json` with OpenHIM core, activates its heartbeat, then
+  automatically runs `scripts/setupOpenhim.js` to create/update the two
+  order-push channels and the `openmrs` OpenHIM Client (idempotent, so it's
+  safe on every boot — a failure here only logs a warning rather than
+  stopping the mediator, and no separate one-shot provisioning step is
+  needed). To force a re-provision without restarting the container (e.g.
+  after only changing `mediatorConfig.json` or `ADVAPACS_BASE_URL`), run
+  `node scripts/setupOpenhim.js` directly, with `.env`'s `OPENHIM_*` vars
+  pointed at the running instance's admin API.
 - **First run on a fresh instance**: OpenHIM core auto-seeds a
   `root@openhim.org` user with its built-in default password
   `openhim-password`, regardless of whatever `OPENHIM_PASSWORD` you set.
   `scripts/setupOpenhim.js` no longer rotates this itself — that's handled by
   distro-tools now.
 
-## Running locally without OpenHIM core
+## Rebuilding and redeploying after a code change
 
 ```bash
-cp .env.example .env      # fill in real credentials, set MEDIATOR_STANDALONE=true
-npm install
-npm start
+# Build this repo's Dockerfile locally, tagged to match what your running
+# instance's fragment expects -- partnersinhealth/omrs-advapacs-mediator:latest
+# unless you overrode ADVAPACS_MEDIATOR_IMAGE_NAME/ADVAPACS_MEDIATOR_IMAGE_TAG
+# in the instance's env file, in which case tag it to match those instead.
+./build-image.sh partnersinhealth/omrs-advapacs-mediator:latest
+
+# Redeploy: `start`, not `update` (runs `docker compose pull` first, which
+# would overwrite your local build with the published image) or `restart`
+# (`docker compose restart` -- restarts the existing container in place,
+# never picks up a new image at all). `start`'s `docker compose up -d` sees
+# the tag already present locally and uses it without pulling.
+openmrs-docker <name> start
+openmrs-docker <name> logs openmrs-advapacs-mediator   # confirm clean restart
 ```
-
-Skips OpenHIM entirely. In `poll` mode this means `orderPoller.js`'s POST to
-`OPENHIM_ROUTER_URL` will fail (nothing listening) — useful for exercising the
-OpenMRS-polling side in isolation, not the full relay.
-
-Since this runs directly on the host (not in a container), `OPENMRS_BASE_URL`
-needs a value reachable from the host itself — `http://localhost:8080/openmrs`
-if OpenMRS is local, not `http://host.docker.internal:...` (that hostname only
-resolves inside a Docker container). If you're switching between this and the
-distro-tools-based flow above with OpenMRS on the same machine, you'll need
-to change this value each time.
-
-## Running registered with OpenHIM core (no Docker)
-
-```bash
-cp .env.example .env      # set OPENHIM_* vars to point at your instance
-npm install
-npm start
-```
-
-On startup the mediator registers itself and `mediatorConfig.json` with
-OpenHIM core, activates its heartbeat, then automatically runs
-`scripts/setupOpenhim.js` to create/update the two order-push channels and
-the `openmrs` OpenHIM Client (idempotent, so it's safe on every boot — a
-failure here only logs a warning rather than stopping the mediator). (It
-used to also register a FHIR `Subscription` with AdvaPACS pointed at its own
-webhook URL on startup, but that's currently disabled along with the rest of
-the result-delivery path — see Known limitations.) Make sure
-`OPENHIM_ROUTER_URL`/`ADVAPACS_CHANNEL_URL` in `.env` point at wherever that
-OpenHIM instance's router actually is. To force a re-provision without
-restarting the mediator (e.g. after only changing `mediatorConfig.json` or
-`ADVAPACS_BASE_URL`), run `node scripts/setupOpenhim.js` directly.
 
 ## Running tests
 

@@ -86,10 +86,4 @@ async function registerAndStart() {
   });
 }
 
-// Allow running standalone (no OpenHIM core) for local testing with
-// MEDIATOR_STANDALONE=true, skipping registration/heartbeat entirely.
-if (process.env.MEDIATOR_STANDALONE === 'true') {
-  startServer();
-} else {
-  registerAndStart();
-}
+registerAndStart();
