@@ -271,11 +271,6 @@ Once it's up:
 # in the instance's env file, in which case tag it to match those instead.
 ./build-image.sh partnersinhealth/omrs-advapacs-mediator:latest
 
-# Redeploy: `start`, not `update` (runs `docker compose pull` first, which
-# would overwrite your local build with the published image) or `restart`
-# (`docker compose restart` -- restarts the existing container in place,
-# never picks up a new image at all). `start`'s `docker compose up -d` sees
-# the tag already present locally and uses it without pulling.
 openmrs-docker <name> start
 openmrs-docker <name> logs openmrs-advapacs-mediator   # confirm clean restart
 ```
