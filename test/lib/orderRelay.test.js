@@ -42,7 +42,7 @@ describe('orderRelay', () => {
     jest.resetModules();
     jest.clearAllMocks();
 
-    process.env.PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
+    process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
@@ -130,7 +130,7 @@ describe('orderRelay', () => {
     expect(outboundArg).not.toHaveProperty('requester');
   });
 
-  test('throws when the patient has no identifier matching PATIENT_IDENTIFIER_SYSTEM, and never sends the ServiceRequest', async () => {
+  test('throws when the patient has no identifier matching ADVAPACS_PATIENT_IDENTIFIER_SYSTEM, and never sends the ServiceRequest', async () => {
     openmrs.getPatient.mockResolvedValue({ ...patientWithEmrId, identifier: [] });
     advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
 

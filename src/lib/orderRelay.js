@@ -4,7 +4,7 @@ const advapacs = require('./advapacsClient');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
-const PATIENT_IDENTIFIER_SYSTEM = process.env.PATIENT_IDENTIFIER_SYSTEM;
+const ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
 
 const PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
 const ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
@@ -35,10 +35,10 @@ async function relayServiceRequest(input) {
     throw new Error(`ServiceRequest ${serviceRequest.id} references non-existent Patient ${patientId}`);
   }
   const emrIdentifier = (patient.identifier || []).find(
-    (identifier) => identifier.system === PATIENT_IDENTIFIER_SYSTEM
+    (identifier) => identifier.system === ADVAPACS_PATIENT_IDENTIFIER_SYSTEM
   );
   if (!emrIdentifier) {
-    throw new Error(`Patient ${patient.id} has no identifier for system ${PATIENT_IDENTIFIER_SYSTEM}`);
+    throw new Error(`Patient ${patient.id} has no identifier for system ${ADVAPACS_PATIENT_IDENTIFIER_SYSTEM}`);
   }
   // Stamp the same emrIdentifier found above with the HL7 PI coding, then
   // substitute it back into place (by reference) among the patient's other
