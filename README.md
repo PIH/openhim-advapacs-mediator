@@ -208,12 +208,67 @@ This repo only builds and publishes the mediator's own image
 whole stack (OpenHIM + this mediator, optionally alongside OpenMRS too), use
 [`openmrs-contrib-distro-tools`](https://github.com/PIH/openmrs-contrib-distro-tools),
 which has canonical service fragments for both (`docker/services/openhim.yaml`
-and `docker/services/openmrs-advapacs-mediator.yaml`):
+and `docker/services/openmrs-advapacs-mediator.yaml`). See distro-tools' own
+README for the full `env` file reference — every
+`OPENHIM_*`/`ADVAPACS_MEDIATOR_*`/`OPENMRS_*`/`ADVAPACS_*` var either fragment
+reads, including the four `OPENHIM_*_HOST_PORT` overrides for the loopback
+ports below — plus the lifecycle commands (`start`/`stop`/`status`/`logs`/
+`update`/`add-service`/`remove-service`/`destroy`) that apply to this stack
+the same way they do to any other distro-tools-managed service.
+
+There are two ways to get an OpenMRS instance into the picture:
+
+### Bundled with OpenMRS
+
+Add distro-tools' `openmrs-db`/`openmrs` fragments to `SERVICES` alongside
+`openhim`/`openmrs-advapacs-mediator`, and it stands up all four as one
+Compose project on a shared network — the mediator's default
+`OPENMRS_BASE_URL` (`http://openmrs:8080/openmrs`) already points at that
+network's `openmrs` service, so you don't need to set it yourself:
 
 ```bash
+export OPENMRS_IMAGE_NAME=<your OpenMRS distro image, e.g. partnersinhealth/lesotho-emr>
+export OPENMRS_PIH_CONFIG=<PIH config profile for this instance, e.g. lesotho,lesotho-kol-ci>
+export SEED_IMAGE_NAME=<optional -- a nightly seed image, to skip a slow first boot>
 export OPENHIM_PASSWORD=<pick-a-password>
 export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
-export OPENMRS_BASE_URL=<your OpenMRS FHIR base URL>
+export OPENMRS_USERNAME=<username the mediator uses against OpenMRS's FHIR API>
+export OPENMRS_PASSWORD=<password the mediator uses against OpenMRS's FHIR API>
+export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
+export ADVAPACS_CLIENT_ID=<...>
+export ADVAPACS_CLIENT_SECRET=<...>
+
+SERVICES=openmrs-db,openmrs,openhim,openmrs-advapacs-mediator openmrs-docker create <name>
+openmrs-docker <name> initialize   # optional, only if SEED_IMAGE_NAME is set -- skips the slow first boot
+openmrs-docker <name> start
+openmrs-docker <name> wait         # blocks until OpenMRS itself finishes starting
+```
+
+Once `wait` reports ready, OpenMRS itself is at `http://localhost:8080/openmrs`
+(or whatever `OPENMRS_HTTP_PORT` you set).
+
+### Connecting to a separately-running OpenMRS SDK instance
+
+Alternatively, run OpenMRS on the host via the OpenMRS SDK (`openmrs-sdk`,
+also part of distro-tools) instead of bundling it into the same Compose
+project, and point the mediator at it. Useful when you're actively developing
+against the distro itself and want the SDK's faster rebuild/redeploy cycle
+rather than rebuilding a Docker image on every change:
+
+```bash
+# 1. Stand up OpenMRS itself via the SDK, from your distro checkout:
+cd <path to your distro repo checkout>
+PIH_CONFIG=<PIH config profile, e.g. lesotho,lesotho-kol-ci> openmrs-sdk create <server-id>
+openmrs-sdk run <server-id>   # leave this running in its own terminal --
+                               # Tomcat on localhost:8080 by default
+
+# 2. Separately, bring up just OpenHIM + this mediator via distro-tools,
+#    pointed at that host-based OpenMRS instance:
+export OPENHIM_PASSWORD=<pick-a-password>
+export ADVAPACS_MEDIATOR_INBOUND_SECRET=<pick-a-secret>
+export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
+export OPENMRS_USERNAME=<username the mediator uses against OpenMRS's FHIR API>
+export OPENMRS_PASSWORD=<password the mediator uses against OpenMRS's FHIR API>
 export ADVAPACS_BASE_URL=https://usa1.api.integration.advapacs.com/fhir/R5
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
@@ -222,14 +277,13 @@ SERVICES=openhim,openmrs-advapacs-mediator openmrs-docker create <name>
 openmrs-docker <name> start
 ```
 
-See distro-tools' own README for the full `env` file reference — every
-`OPENHIM_*`/`ADVAPACS_MEDIATOR_*`/`OPENMRS_*`/`ADVAPACS_*` var this fragment
-reads, including the four `OPENHIM_*_HOST_PORT` overrides for the loopback
-ports below — plus the lifecycle commands (`start`/`stop`/`status`/`logs`/
-`update`/`add-service`/`remove-service`/`destroy`) that apply to this stack
-the same way they do to any other distro-tools-managed service.
+`http://host.docker.internal:8080/openmrs` (rather than `localhost`) is
+required because the mediator resolves `OPENMRS_BASE_URL` from inside its own
+container — the fragment's `extra_hosts` entry makes `host.docker.internal`
+resolve back to this machine. If the SDK server's `SERVER_PORT` isn't the
+default `8080`, adjust the port to match.
 
-Once it's up:
+Once it's up (either way):
 - **Console UI**: `http://127.0.0.1:9000` (or whatever `OPENHIM_CONSOLE_HOST_PORT`
   you set), log in with `OPENHIM_USERNAME`/`OPENHIM_PASSWORD`.
 - **Admin API**: `https://127.0.0.1:8081` (`OPENHIM_ADMIN_API_HOST_PORT`).
