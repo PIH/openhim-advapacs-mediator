@@ -121,19 +121,17 @@ they need your actual data model, not boilerplate:
   never authenticate at all. Mutual TLS is the only OpenHIM-native way around
   that conflict, but stands up real cert issuance/rotation for a channel whose
   only caller is the mediator container itself on a private Docker network —
-  disproportionate here. The actual compensating control is network isolation
-  instead: whatever's running this stack (e.g. distro-tools' `openhim`
-  service fragment) binds OpenHIM's router/admin API/console ports to
-  `127.0.0.1` only, so nothing outside that Docker Compose project can reach
-  this channel regardless of its `authType`. This holds even on a host
-  shared with other apps — a compromised *container* elsewhere doesn't grant
-  access to our loopback-bound ports or our instance's own Docker network on
-  its own (each Compose project gets its own isolated bridge network by
-  default). Revisit this reasoning only if this host's trust model changes —
-  e.g. it becomes genuinely multi-tenant with untrusted operators, or any
-  co-located app runs with `network_mode: host` or gets explicitly connected
-  to this instance's network. A PIH-controlled shared host running other PIH
-  apps under normal Docker Compose isolation doesn't change this calculus.
+  disproportionate here. The compensating control is the network instead.
+  The host runs behind a firewall and VPN, and distro-tools' `openhim` fragment
+  publishes only the ports the integration and its management use (see the
+  comments in its `openhim.yaml`). The router's HTTP port is published for
+  AdvaPACS's result webhook, so it can carry this public channel too: the
+  reverse proxy in front (Caddy on the app cluster) must forward only the paths
+  external systems call (the webhook), never `/advapacs/*` or the whole
+  router. Otherwise anyone who can reach the proxy can relay requests to
+  AdvaPACS through this channel. Revisit this if the host's trust model
+  changes, e.g. it stops being VPN-only, or an app on it runs with
+  `network_mode: host` or joins this instance's Docker network.
 
 ## Step you still need to do on the OpenMRS side
 
@@ -211,7 +209,7 @@ which has canonical service fragments for both (`docker/services/openhim.yaml`
 and `docker/services/openhim-advapacs-mediator.yaml`). See distro-tools' own
 README for the full `env` file reference — every
 `OPENHIM_*`/`ADVAPACS_MEDIATOR_*`/`OPENMRS_*`/`ADVAPACS_*` var either fragment
-reads, including the four `OPENHIM_*_HOST_PORT` overrides for the loopback
+reads, including the `OPENHIM_*_HOST_PORT` overrides for the published
 ports below — plus the lifecycle commands (`start`/`stop`/`status`/`logs`/
 `update`/`add-service`/`remove-service`/`destroy`) that apply to this stack
 the same way they do to any other distro-tools-managed service.
@@ -302,19 +300,19 @@ openmrs-docker <name> logs openhim-advapacs-mediator   # confirm clean restart
 Once it's up (either way):
 - **Console UI**: `http://localhost:9000` (or whatever `OPENHIM_CONSOLE_HOST_PORT`
   you set), log in with `OPENHIM_USERNAME`/`OPENHIM_PASSWORD`.
-- **Admin API**: `https://127.0.0.1:8081` (`OPENHIM_ADMIN_API_HOST_PORT`).
-  Both are bound to `127.0.0.1` only by the `openhim` fragment, not reachable
-  from the LAN/internet — use an SSH tunnel (`ssh -L 8081:127.0.0.1:8081 -L
-  9000:127.0.0.1:9000 <user>@<server>`) if this is running somewhere other
-  than your own machine.
+- **Admin API**: `http://localhost:8081` (`OPENHIM_ADMIN_API_HOST_PORT`), plain
+  HTTP. The console runs in your browser and calls this API directly, so both
+  are published; on a server, reach them through its reverse proxy (which
+  adds TLS) or an SSH tunnel (`ssh -L 8081:localhost:8081 -L
+  9000:localhost:9000 <user>@<server>`).
 - **OpenHIM's transaction log** (the actual FHIR request/response history for
   every push through the two channels) lives in the console UI above, or the
   admin API directly:
   ```bash
-  curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
-    'https://localhost:8081/transactions?filterLimit=10&filterPage=0'   # list
-  curl -k -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
-    'https://localhost:8081/transactions/<id>'                          # one transaction's full bodies
+  curl -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
+    'http://localhost:8081/transactions?filterLimit=10&filterPage=0'    # list
+  curl -u "$OPENHIM_USERNAME:$OPENHIM_PASSWORD" \
+    'http://localhost:8081/transactions/<id>'                           # one transaction's full bodies
   ```
 - **Channel/client provisioning**: on startup the mediator registers itself
   and `mediatorConfig.json` with OpenHIM core, activates its heartbeat, then
