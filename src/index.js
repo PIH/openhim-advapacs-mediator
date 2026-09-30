@@ -1,9 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = express.json;
-const medUtils = require('openhim-mediator-utils').default;
-
 const logger = require('./lib/logger');
+const openhim = require('./lib/openhimClient');
 const orderPoller = require('./lib/orderPoller');
 const mediatorConfig = require('../mediatorConfig.json');
 const { main: setupOpenhim } = require('../scripts/setupOpenhim');
@@ -15,14 +14,6 @@ const serviceRequestRoute = require('./routes/serviceRequest');
 // rather than deleted so it's easy to re-enable once that path is ready to test.
 // const subscriptionWebhookRoute = require('./routes/subscriptionWebhook');
 // const advapacs = require('./lib/advapacsClient');
-
-const openhimConfig = {
-  username: process.env.OPENHIM_USERNAME,
-  password: process.env.OPENHIM_PASSWORD,
-  apiURL: process.env.OPENHIM_API_URL,
-  trustSelfSigned: process.env.OPENHIM_TRUST_SELF_SIGNED === 'true',
-  urn: mediatorConfig.urn
-};
 
 function startServer() {
   const app = express();
@@ -50,40 +41,40 @@ function startServer() {
 }
 
 async function registerAndStart() {
-  medUtils.registerMediator(openhimConfig, mediatorConfig, (err) => {
-    if (err) {
-      logger.error('Failed to register mediator with OpenHIM core', { error: err.message || err });
-      process.exit(1);
-    }
+  try {
+    await openhim.registerMediator(mediatorConfig);
+  } catch (err) {
+    logger.error('Failed to register mediator with OpenHIM core', { error: err.message || err });
+    process.exit(1);
+  }
 
-    medUtils.activateHeartbeat(openhimConfig);
-    logger.info('Registered with OpenHIM core and activated heartbeat');
+  openhim.activateHeartbeat(mediatorConfig.urn);
+  logger.info('Registered with OpenHIM core and activated heartbeat');
 
-    // Provisions the AdvaPACS-specific channels/client via the admin API --
-    // registerMediator above only stores mediatorConfig.json's
-    // defaultChannelConfig as a console-importable suggestion, it doesn't
-    // create anything. Non-fatal on failure and re-run on every boot
-    // (idempotent) so a transient admin-API hiccup doesn't crash-loop the
-    // whole mediator -- it'll just retry next restart, or can be re-run
-    // on demand via `node scripts/setupOpenhim.js`.
-    setupOpenhim()
-      .then(() => logger.info('OpenHIM channels/clients provisioned'))
-      .catch((err) => logger.warn('Failed to provision OpenHIM channels/clients -- continuing startup', { error: err.message }))
-      .finally(() => startServer());
+  // Provisions the AdvaPACS-specific channels/client via the admin API --
+  // registerMediator above only stores mediatorConfig.json's
+  // defaultChannelConfig as a console-importable suggestion, it doesn't
+  // create anything. Non-fatal on failure and re-run on every boot
+  // (idempotent) so a transient admin-API hiccup doesn't crash-loop the
+  // whole mediator -- it'll just retry next restart, or can be re-run
+  // on demand via `node scripts/setupOpenhim.js`.
+  setupOpenhim()
+    .then(() => logger.info('OpenHIM channels/clients provisioned'))
+    .catch((err) => logger.warn('Failed to provision OpenHIM channels/clients -- continuing startup', { error: err.message }))
+    .finally(() => startServer());
 
-    // DISABLED (for now) -- see the commented-out require above. This was
-    // also the source of the "Could not confirm AdvaPACS subscription on
-    // startup" warning logged on every boot.
-    //
-    // One-time setup: make sure AdvaPACS has a live Subscription pointed at
-    // our webhook. Safe to leave in on every boot; AdvaPACS treats repeat
-    // registration of an equivalent Subscription as idempotent-ish, but
-    // consider gating this behind an explicit CLI flag in production.
-    // const webhookUrl = `${process.env.OPENHIM_API_URL}/webhooks/advapacs`;
-    // advapacs
-    //   .ensureSubscription(webhookUrl, process.env.ADVAPACS_WEBHOOK_SECRET, 'ImagingStudy')
-    //   .catch((e) => logger.warn('Could not confirm AdvaPACS subscription on startup', { error: e.message }));
-  });
+  // DISABLED (for now) -- see the commented-out require above. This was
+  // also the source of the "Could not confirm AdvaPACS subscription on
+  // startup" warning logged on every boot.
+  //
+  // One-time setup: make sure AdvaPACS has a live Subscription pointed at
+  // our webhook. Safe to leave in on every boot; AdvaPACS treats repeat
+  // registration of an equivalent Subscription as idempotent-ish, but
+  // consider gating this behind an explicit CLI flag in production.
+  // const webhookUrl = `${process.env.OPENHIM_API_URL}/webhooks/advapacs`;
+  // advapacs
+  //   .ensureSubscription(webhookUrl, process.env.ADVAPACS_WEBHOOK_SECRET, 'ImagingStudy')
+  //   .catch((e) => logger.warn('Could not confirm AdvaPACS subscription on startup', { error: e.message }));
 }
 
 registerAndStart();

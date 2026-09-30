@@ -1,7 +1,6 @@
 require('dotenv').config();
-const axios = require('axios');
-const https = require('https');
 const crypto = require('crypto');
+const { client: api } = require('../src/lib/openhimClient');
 const mediatorConfig = require('../mediatorConfig.json');
 
 // Channels aren't auto-created when the mediator registers -- OpenHIM only
@@ -39,17 +38,6 @@ function withRealAdvapacsRoute(channelDef) {
     }))
   };
 }
-
-const api = axios.create({
-  baseURL: process.env.OPENHIM_API_URL,
-  auth: {
-    username: process.env.OPENHIM_USERNAME,
-    password: process.env.OPENHIM_PASSWORD
-  },
-  httpsAgent: new https.Agent({
-    rejectUnauthorized: process.env.OPENHIM_TRUST_SELF_SIGNED !== 'true'
-  })
-});
 
 // Defensive: don't trust compose healthcheck timing alone (the reference
 // healthcheck this project is modeled on was silently broken -- see the
