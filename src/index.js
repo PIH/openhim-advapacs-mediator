@@ -48,7 +48,13 @@ async function registerAndStart() {
     process.exit(1);
   }
 
-  openhim.activateHeartbeat(mediatorConfig.urn);
+  // If openhim-core later loses the registration (e.g. it comes up on an empty database), the
+  // heartbeat gets a 404: register again and re-provision the channels and client, which went with it.
+  openhim.activateHeartbeat(mediatorConfig.urn, 10000, async () => {
+    await openhim.registerMediator(mediatorConfig);
+    await setupOpenhim();
+    logger.info('Registered with OpenHIM core again and re-provisioned channels/clients');
+  });
   logger.info('Registered with OpenHIM core and activated heartbeat');
 
   // Provisions the AdvaPACS-specific channels/client via the admin API --

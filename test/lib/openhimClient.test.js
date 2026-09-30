@@ -87,4 +87,23 @@ describe('openhimClient configuration', () => {
     expect(post).toHaveBeenCalledTimes(3);
     expect(logger.warn).toHaveBeenCalledWith('OpenHIM heartbeat failed', { error: 'connect ECONNREFUSED' });
   });
+
+  test('a heartbeat answered 404 (OpenHIM no longer knows the mediator) calls onNotRegistered, once at a time', async () => {
+    jest.useFakeTimers();
+    const openhim = loadClient({ OPENHIM_API_URL: 'http://127.0.0.1:1' });
+    const notFound = Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } });
+    jest.spyOn(openhim.client, 'post').mockRejectedValue(notFound);
+    let finish;
+    const onNotRegistered = jest.fn(() => new Promise((resolve) => { finish = resolve; }));
+
+    const timer = openhim.activateHeartbeat('urn:mediator:test', 10000, onNotRegistered);
+    await jest.advanceTimersByTimeAsync(20000);
+    expect(onNotRegistered).toHaveBeenCalledTimes(1);
+    finish();
+    await jest.advanceTimersByTimeAsync(10000);
+    clearInterval(timer);
+    jest.useRealTimers();
+
+    expect(onNotRegistered).toHaveBeenCalledTimes(2);
+  });
 });
