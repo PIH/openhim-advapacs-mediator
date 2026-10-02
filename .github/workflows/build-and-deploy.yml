@@ -57,11 +57,10 @@ jobs:
 
   deploy-to-kol-ci:
     needs: build-and-publish
-    concurrency:
-      group: deploy-to-app-cluster-${{ github.ref }}
-      cancel-in-progress: true
     uses: PIH/openmrs-contrib-distro-tools/.github/workflows/deploy-via-runner.yml@main
     with:
       runner-label: appclstr-01
+      instances: kol-ci
+      host: false
       notify_ci_dashboard: true
     secrets: inherit
