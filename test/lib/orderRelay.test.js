@@ -854,4 +854,22 @@ describe('orderRelay', () => {
       { system: 'http://snomed.info/sct', code: '399208008', display: 'Plain chest X-ray' }
     ]);
   });
+
+  test('stamps the patient identifier with ADVAPACS_PATIENT_IDENTIFIER_TYPE_CODE when set (authority type, e.g. PN)', async () => {
+    process.env.ADVAPACS_PATIENT_IDENTIFIER_TYPE_CODE = 'PN';
+    jest.resetModules();
+    openmrs = require('../../src/lib/openmrsClient');
+    advapacs = require('../../src/lib/advapacsClient');
+    orderRelay = require('../../src/lib/orderRelay');
+    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+    advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+    await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+    const [outboundPatient] = advapacs.upsertPatient.mock.calls[0];
+    expect(outboundPatient.identifier[0].type.coding[0]).toEqual(
+      { system: 'http://terminology.hl7.org/CodeSystem/v2-0203', code: 'PN' });
+    delete process.env.ADVAPACS_PATIENT_IDENTIFIER_TYPE_CODE;
+  });
 });

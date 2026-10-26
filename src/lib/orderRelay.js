@@ -17,7 +17,10 @@ const ACCESSION_NUMBER_SYSTEM = process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM ||
 
 
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/v2-0203';
-const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = 'PI';
+// The identifier's type must match its assigning authority's type in AdvaPACS (else 422 "Invalid
+// type"): PIH-LESOTHO-EMR-ID is PI; a site whose authority has another type (e.g. PN) sets
+// ADVAPACS_PATIENT_IDENTIFIER_TYPE_CODE.
+const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = process.env.ADVAPACS_PATIENT_IDENTIFIER_TYPE_CODE || 'PI';
 
 const ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM = 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code';
 const DICOM_UID_SYSTEM = 'urn:dicom:uid';
