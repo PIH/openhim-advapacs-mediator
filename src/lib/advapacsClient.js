@@ -42,13 +42,14 @@ async function upsertPatient(patient, identifierSystem, identifierValue) {
   const { data: searchResults } = await client.get('/Patient', {
     params: { identifier: `${identifierSystem}|${identifierValue}` }
   });
-  const existingId = searchResults.total > 0 ? searchResults.entry[0].resource.id : undefined;
+  const existing = searchResults.total > 0 ? searchResults.entry[0].resource : undefined;
 
   // FHIR update requires the body's id to match the URL's id (HAPI-0420
   // otherwise) -- `patient` still carries its origin system's id, so it must
   // be overwritten with AdvaPACS's own id here, not just addressed via URL.
-  const { data } = existingId
-    ? await client.put(`/Patient/${existingId}`, { ...patient, id: existingId })
+  // It also keeps identifiers other sites added (see withOtherSitesIdentifiers).
+  const { data } = existing
+    ? await client.put(`/Patient/${existing.id}`, { ...withOtherSitesIdentifiers(patient, existing), id: existing.id })
     : await client.post('/Patient', patient);
   logger.info('Upserted Patient in AdvaPACS', { advapacsId: data.id });
   return data;
@@ -113,6 +114,20 @@ async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'Imaging
 async function findServiceRequestByIdentifier(system, value) {
   const { data } = await client.get('/ServiceRequest', { params: { identifier: `${system}|${value}` } });
   return (data && data.entry && data.entry.length) ? data.entry[0].resource : null;
+}
+
+/**
+ * A patient seen at several sites can carry an identifier from each site's assigning authority (one
+ * AdvaPACS patient, several identifier systems). An update from this site replaces the identifiers in
+ * the systems it sends and keeps the others, so it doesn't undo the link to the other sites' records.
+ */
+function withOtherSitesIdentifiers(patient, existing) {
+  const ours = patient.identifier || [];
+  const ourSystems = new Set(ours.map((identifier) => identifier.system).filter(Boolean));
+  const theirs = (existing.identifier || []).filter(
+    (identifier) => identifier.system && !ourSystems.has(identifier.system)
+  );
+  return theirs.length ? { ...patient, identifier: [...ours, ...theirs] } : patient;
 }
 
 module.exports = { createServiceRequest, findServiceRequestByIdentifier, upsertPatient, upsertPractitioner, getResourceByUrl, ensureSubscription };
