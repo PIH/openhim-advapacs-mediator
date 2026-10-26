@@ -106,4 +106,13 @@ async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'Imaging
   return data;
 }
 
-module.exports = { createServiceRequest, upsertPatient, upsertPractitioner, getResourceByUrl, ensureSubscription };
+/**
+ * The ServiceRequest with this identifier (system|value), or null. AdvaPACS requires the system
+ * on identifier searches.
+ */
+async function findServiceRequestByIdentifier(system, value) {
+  const { data } = await client.get('/ServiceRequest', { params: { identifier: `${system}|${value}` } });
+  return (data && data.entry && data.entry.length) ? data.entry[0].resource : null;
+}
+
+module.exports = { createServiceRequest, findServiceRequestByIdentifier, upsertPatient, upsertPractitioner, getResourceByUrl, ensureSubscription };

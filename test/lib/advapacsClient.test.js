@@ -112,6 +112,20 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
   });
 
+  test('findServiceRequestByIdentifier searches by system|value and returns the first match', async () => {
+    mockClient.get.mockResolvedValue({ data: { total: 1, entry: [{ resource: { resourceType: 'ServiceRequest', id: 'advapacs-sr1' } }] } });
+
+    const result = await advapacs.findServiceRequestByIdentifier('http://example.org/acc', 'A1');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', { params: { identifier: 'http://example.org/acc|A1' } });
+    expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
+  });
+
+  test('findServiceRequestByIdentifier returns null when there is no match', async () => {
+    mockClient.get.mockResolvedValue({ data: { total: 0 } });
+    expect(await advapacs.findServiceRequestByIdentifier('http://example.org/acc', 'A1')).toBeNull();
+  });
+
   test('ensureSubscription posts a Subscription with the webhook endpoint and bearer secret', async () => {
     mockClient.post.mockResolvedValue({ data: { resourceType: 'Subscription', id: 'sub1' } });
 
