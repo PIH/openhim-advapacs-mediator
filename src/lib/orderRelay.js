@@ -14,6 +14,7 @@ const PATIENT_INTERNAL_IDENTIFIER_TYPE_SYSTEM = 'http://terminology.hl7.org/Code
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = 'PI';
 
 const ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM = 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code';
+const DICOM_UID_SYSTEM = 'urn:dicom:uid';
 
 /**
  * Core order-relay logic, independent of how the ServiceRequest arrived
@@ -76,6 +77,8 @@ async function relayServiceRequest(input) {
   // through unchanged. We will need to build support for different status
   const outboundStatus = serviceRequest.status === 'completed' ? 'draft' : serviceRequest.status;
 
+  const clinicalHistory = await clinicalHistoryOf(serviceRequest.id);
+
   // strip out the OpenMRS-specific and OpenMRS Reference fields we don't want to send to AdvaPACS
   const { encounter, requester, occurrencePeriod, id, meta, text, ...serviceRequestWithoutStrippedFields } = serviceRequest;
 
@@ -99,12 +102,28 @@ async function relayServiceRequest(input) {
     // to derive this from yet. Replace with a real per-order-type modality
     // mapping once that ticket is scoped.
     orderDetail: [{
-      parameter: [{
-        code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'modality' }] },
-        valueString: 'CR'
-      }]
+      parameter: [
+        orderDetailParameter('modality', 'CR'),
+        // Shown as the order's Clinical History in AdvaPACS (Orders panel, RADPAIR)
+        ...(clinicalHistory ? [orderDetailParameter('clinical-history', clinicalHistory)] : [])
+      ]
     }]
   };
+
+  // Optional, per site (both unset on Kol-CI):
+  // ADVAPACS_PERFORMER_REFERENCE, e.g. "Device/<id>": the site's modality, so a shared tenant's
+  // sites can tell their orders apart (and a site's modality worklist picks up only its own).
+  if (process.env.ADVAPACS_PERFORMER_REFERENCE) {
+    outboundServiceRequest.performer = [{ reference: process.env.ADVAPACS_PERFORMER_REFERENCE }];
+  }
+  // ADVAPACS_ASSIGN_STUDY_UID=true: give the order a Study Instance UID, derived from the OpenMRS
+  // order uuid (stable across re-sends), for modality worklists that need one up front.
+  if (process.env.ADVAPACS_ASSIGN_STUDY_UID === 'true' && serviceRequest.id) {
+    outboundServiceRequest.identifier = [
+      ...outboundServiceRequest.identifier,
+      { system: DICOM_UID_SYSTEM, value: `urn:oid:${studyUidFromUuid(serviceRequest.id)}` }
+    ];
+  }
 
   // send ServiceRequest to AdvaPACS
   const created = await advapacs.createServiceRequest(outboundServiceRequest);
@@ -243,6 +262,27 @@ function withNoteAuthor(notes, requester) {
 // the caller.)
 function toOutboundPractitioner({ name, telecom, address, birthDate, gender }) {
   return { resourceType: 'Practitioner', name, telecom, address, birthDate, gender };
+}
+
+// The order's clinical history, or null. Never fails the relay: the order matters more.
+async function clinicalHistoryOf(orderUuid) {
+  if (!orderUuid) return null;
+  try {
+    return await openmrs.getOrderClinicalHistory(orderUuid);
+  } catch (err) {
+    logger.warn('Could not read the order\'s clinical history from OpenMRS; sending the order without it',
+      { openmrsServiceRequestId: orderUuid, error: err.message });
+    return null;
+  }
+}
+
+function orderDetailParameter(code, valueString) {
+  return { code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code }] }, valueString };
+}
+
+// DICOM UID from a UUID (PS3.5 B.2: "2.25." + the UUID as an unsigned decimal integer)
+function studyUidFromUuid(uuid) {
+  return `2.25.${BigInt(`0x${uuid.replace(/-/g, '')}`).toString()}`;
 }
 
 function displayNameOf(person) {
