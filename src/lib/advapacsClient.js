@@ -55,6 +55,24 @@ async function upsertPatient(patient, identifierSystem, identifierValue) {
 }
 
 /**
+ * Push the ordering clinician into AdvaPACS ahead of the ServiceRequest that
+ * references it as its requester (see orderRelay.js). Same search-then-decide
+ * as upsertPatient, for the same reason (no conditional update).
+ */
+async function upsertPractitioner(practitioner, identifierSystem, identifierValue) {
+  const { data: searchResults } = await client.get('/Practitioner', {
+    params: { identifier: `${identifierSystem}|${identifierValue}` }
+  });
+  const existingId = searchResults.total > 0 ? searchResults.entry[0].resource.id : undefined;
+
+  const { data } = existingId
+    ? await client.put(`/Practitioner/${existingId}`, { ...practitioner, id: existingId })
+    : await client.post('/Practitioner', practitioner);
+  logger.info('Upserted Practitioner in AdvaPACS', { advapacsId: data.id });
+  return data;
+}
+
+/**
  * Fetch a resource by absolute reference URL, used when a Subscription
  * notification arrives as a lightweight ping rather than a full resource
  * payload and we need to go fetch the ImagingStudy/DiagnosticReport ourselves.
@@ -88,4 +106,4 @@ async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'Imaging
   return data;
 }
 
-module.exports = { createServiceRequest, upsertPatient, getResourceByUrl, ensureSubscription };
+module.exports = { createServiceRequest, upsertPatient, upsertPractitioner, getResourceByUrl, ensureSubscription };

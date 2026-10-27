@@ -236,6 +236,7 @@ export ADVAPACS_MEDIATOR_OPENHIM_INBOUND_CLIENT_PASSWORD=<pick-a-password>
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
+export ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/provider-uuid"
 export SERVICES=openmrs-db,openmrs,openhim,openhim-advapacs-mediator 
 
 openmrs-docker create <name>
@@ -272,6 +273,7 @@ export ADVAPACS_MEDIATOR_OPENHIM_INBOUND_CLIENT_PASSWORD=<pick-a-password>
 export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
+export ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/provider-uuid"
 export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
 export SERVICES=openhim,openhim-advapacs-mediator 
 openmrs-docker create <name>
