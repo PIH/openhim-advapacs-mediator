@@ -5,6 +5,7 @@ const advapacs = require('./advapacsClient');
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
 const ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
+const ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM;
 
 const PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
 const ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
@@ -60,8 +61,12 @@ async function relayServiceRequest(input) {
   // create a new subject reference unsing the AdvaPACS-assigned patient id
   const outboundSubject = {
     reference: `Patient/${createdPatient.id}`,
-    display: patientNameOf(patient)
+    display: displayNameOf(patient)
   };
+
+  // Likewise send the ordering clinician (if any) first, and reference them by
+  // their AdvaPACS-assigned Practitioner id
+  const outboundRequester = await relayRequester(serviceRequest.requester);
 
   // TODO: OpenMRS ServiceRequests are arriving here already marked "completed"
   // due to a workaround in the Radiology app module
@@ -78,6 +83,7 @@ async function relayServiceRequest(input) {
     ...serviceRequestWithoutStrippedFields,
     identifier: withAccessionNumber(serviceRequest.identifier),
     subject: outboundSubject,
+    requester: outboundRequester,
     status: outboundStatus,
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
@@ -181,8 +187,64 @@ function toCodeableReference(concept) {
   return concept ? { concept } : undefined;
 }
 
-function patientNameOf(patient) {
-  const name = patient.name && patient.name[0];
+// Fetches the ServiceRequest's requester (the ordering clinician) from OpenMRS,
+// upserts it into AdvaPACS, and returns a reference to it by its AdvaPACS id.
+// The ordering clinician is nice-to-have, not worth losing the order over: if
+// anything goes wrong, logs a warning and returns undefined, so the
+// ServiceRequest is sent without one.
+async function relayRequester(requester) {
+  const [resourceType, practitionerId] = ((requester && requester.reference) || '').split('/').slice(-2);
+  if (resourceType !== 'Practitioner' || !practitionerId) return undefined;
+
+  if (!ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM) {
+    logger.warn('ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM is not set; sending ServiceRequest without a requester', {
+      openmrsPractitionerId: practitionerId
+    });
+    return undefined;
+  }
+
+  try {
+    const practitioner = await openmrs.getResource('Practitioner', practitionerId);
+    const identifier = (practitioner.identifier || []).find((candidate) => candidate.value);
+    if (!identifier) {
+      logger.warn('Practitioner has no identifier to match on in AdvaPACS; sending ServiceRequest without a requester', {
+        openmrsPractitionerId: practitionerId
+      });
+      return undefined;
+    }
+
+    // AdvaPACS (with Assigning Authorities enabled) rejects any identifier
+    // whose system is missing or isn't registered with it, which OpenMRS's
+    // provider identifiers can't be relied on to have -- so stamp ours on,
+    // and send only this one identifier. ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM
+    // must be registered as an Assigning Authority in AdvaPACS.
+    const stampedIdentifier = { ...identifier, system: ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM };
+    const outboundPractitioner = { ...toOutboundPractitioner(practitioner), identifier: [stampedIdentifier] };
+
+    const createdPractitioner = await advapacs.upsertPractitioner(
+      outboundPractitioner, ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, identifier.value
+    );
+    return {
+      reference: `Practitioner/${createdPractitioner.id}`,
+      display: displayNameOf(practitioner)
+    };
+  } catch (err) {
+    logger.warn('Failed to relay ordering clinician to AdvaPACS; sending ServiceRequest without a requester', {
+      openmrsPractitionerId: practitionerId,
+      error: err.message
+    });
+    return undefined;
+  }
+}
+
+// Only the fields AdvaPACS's Practitioner docs list as supported -- drops
+// OpenMRS's id/meta/text and its provider extensions.
+function toOutboundPractitioner({ identifier, name, telecom, address, birthDate, gender }) {
+  return { resourceType: 'Practitioner', identifier, name, telecom, address, birthDate, gender };
+}
+
+function displayNameOf(person) {
+  const name = person.name && person.name[0];
   if (!name) return undefined;
   return [...(name.given || []), name.family].filter(Boolean).join(' ');
 }

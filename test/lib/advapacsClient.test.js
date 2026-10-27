@@ -75,6 +75,33 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'Patient', id: 'advapacs-new' });
   });
 
+  test('upsertPractitioner searches by identifierSystem|identifierValue, then PUTs to /Practitioner/{id} with the AdvaPACS id substituted into the body, when a match is found', async () => {
+    const practitioner = { resourceType: 'Practitioner', identifier: [{ system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }] };
+    mockClient.get.mockResolvedValue({
+      data: { resourceType: 'Bundle', total: 1, entry: [{ resource: { resourceType: 'Practitioner', id: 'advapacs-pr1' } }] }
+    });
+    mockClient.put.mockResolvedValue({ data: { resourceType: 'Practitioner', id: 'advapacs-pr1' } });
+
+    const result = await advapacs.upsertPractitioner(practitioner, 'http://www.pih.org/identifiers/lesotho/provider-id', 'PROV-1');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/Practitioner', {
+      params: { identifier: 'http://www.pih.org/identifiers/lesotho/provider-id|PROV-1' }
+    });
+    expect(mockClient.put).toHaveBeenCalledWith('/Practitioner/advapacs-pr1', { ...practitioner, id: 'advapacs-pr1' });
+    expect(result).toEqual({ resourceType: 'Practitioner', id: 'advapacs-pr1' });
+  });
+
+  test('upsertPractitioner POSTs to /Practitioner (create) when the search finds no match', async () => {
+    const practitioner = { resourceType: 'Practitioner', identifier: [{ system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }] };
+    mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', total: 0, entry: [] } });
+    mockClient.post.mockResolvedValue({ data: { resourceType: 'Practitioner', id: 'advapacs-new' } });
+
+    const result = await advapacs.upsertPractitioner(practitioner, 'http://www.pih.org/identifiers/lesotho/provider-id', 'PROV-1');
+
+    expect(mockClient.post).toHaveBeenCalledWith('/Practitioner', practitioner);
+    expect(result).toEqual({ resourceType: 'Practitioner', id: 'advapacs-new' });
+  });
+
   test('createServiceRequest posts the ServiceRequest to /ServiceRequest and returns response data', async () => {
     const serviceRequest = { resourceType: 'ServiceRequest', id: 'sr1' };
     mockClient.post.mockResolvedValue({ data: { resourceType: 'ServiceRequest', id: 'advapacs-sr1' } });

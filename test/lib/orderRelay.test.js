@@ -43,6 +43,7 @@ describe('orderRelay', () => {
     jest.clearAllMocks();
 
     process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
+    process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/provider-id';
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
@@ -116,18 +117,143 @@ describe('orderRelay', () => {
     expect(outboundArg).not.toHaveProperty('encounter');
   });
 
-  test('strips the requester field from the outbound ServiceRequest', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
-    advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
-    advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
-
-    await orderRelay.relayServiceRequest({
+  describe('ordering clinician (requester) relayed as an AdvaPACS Practitioner', () => {
+    const openmrsPractitioner = {
+      resourceType: 'Practitioner',
+      id: 'omrs-practitioner-uuid',
+      meta: { lastUpdated: '2026-08-03T16:29:49.000-04:00' },
+      text: { status: 'generated', div: '<div/>' },
+      extension: [{ url: 'http://fhir.openmrs.org/ext/provider/role', valueString: 'Clinician' }],
+      identifier: [{ id: 'omrs-identifier-uuid', value: 'PROV-1' }],
+      name: [{ family: 'Herb', given: ['Phil'] }],
+      gender: 'male'
+    };
+    const serviceRequestWithRequester = {
       ...serviceRequestWithSubject,
-      requester: { reference: 'Practitioner/omrs-practitioner-uuid' }
+      requester: { reference: 'Practitioner/omrs-practitioner-uuid', display: 'Phil Herb' }
+    };
+
+    beforeEach(() => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      openmrs.getResource.mockResolvedValue(openmrsPractitioner);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.upsertPractitioner.mockResolvedValue({ id: 'advapacs-practitioner-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
-    const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-    expect(outboundArg).not.toHaveProperty('requester');
+    test('fetches the requester Practitioner from OpenMRS', async () => {
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(openmrs.getResource).toHaveBeenCalledWith('Practitioner', 'omrs-practitioner-uuid');
+    });
+
+    test('upserts the Practitioner into AdvaPACS, matched on its identifier stamped with ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, sending only the fields AdvaPACS supports', async () => {
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(advapacs.upsertPractitioner).toHaveBeenCalledWith({
+        resourceType: 'Practitioner',
+        identifier: [{ id: 'omrs-identifier-uuid', system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }],
+        name: [{ family: 'Herb', given: ['Phil'] }],
+        gender: 'male'
+      }, 'http://www.pih.org/identifiers/lesotho/provider-id', 'PROV-1');
+    });
+
+    test('sends only the stamped identifier, dropping any others (AdvaPACS 422s on any unregistered identifier system)', async () => {
+      openmrs.getResource.mockResolvedValue({
+        ...openmrsPractitioner,
+        identifier: [...openmrsPractitioner.identifier, { system: 'http://example.org/other-id', value: 'OTHER-1' }]
+      });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      const [outboundPractitionerArg] = advapacs.upsertPractitioner.mock.calls[0];
+      expect(outboundPractitionerArg.identifier).toEqual([
+        { id: 'omrs-identifier-uuid', system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }
+      ]);
+    });
+
+    test('sends no requester, and fetches no Practitioner, when ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM is not set', async () => {
+      delete process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM;
+      jest.resetModules();
+      openmrs = require('../../src/lib/openmrsClient');
+      advapacs = require('../../src/lib/advapacsClient');
+      orderRelay = require('../../src/lib/orderRelay');
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(openmrs.getResource).not.toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
+    });
+
+    test('references the requester on the outbound ServiceRequest by the AdvaPACS-assigned Practitioner id, not the OpenMRS UUID', async () => {
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toEqual({
+        reference: 'Practitioner/advapacs-practitioner-1',
+        display: 'Phil Herb'
+      });
+    });
+
+    test('upserts the Practitioner before sending the ServiceRequest', async () => {
+      const callOrder = [];
+      advapacs.upsertPractitioner.mockImplementation(async () => {
+        callOrder.push('practitioner');
+        return { id: 'advapacs-practitioner-1' };
+      });
+      advapacs.createServiceRequest.mockImplementation(async () => {
+        callOrder.push('serviceRequest');
+        return { id: 'advapacs-sr-1' };
+      });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(callOrder).toEqual(['practitioner', 'serviceRequest']);
+    });
+
+    test('sends no requester, and upserts no Practitioner, when the ServiceRequest has no requester', async () => {
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
+    });
+
+    test('sends no requester when the requester is not a Practitioner', async () => {
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        requester: { reference: 'Organization/omrs-org-uuid' }
+      });
+
+      expect(openmrs.getResource).not.toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
+    });
+
+    test('still sends the ServiceRequest, without a requester, when the Practitioner has no identifier to upsert by', async () => {
+      openmrs.getResource.mockResolvedValue({ ...openmrsPractitioner, identifier: [] });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
+    });
+
+    test('still sends the ServiceRequest, without a requester, when the Practitioner upsert fails', async () => {
+      advapacs.upsertPractitioner.mockRejectedValue(new Error('Request failed with status code 422'));
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
+    });
   });
 
   test('throws when the patient has no identifier matching ADVAPACS_PATIENT_IDENTIFIER_SYSTEM, and never sends the ServiceRequest', async () => {
