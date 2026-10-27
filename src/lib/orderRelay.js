@@ -84,6 +84,7 @@ async function relayServiceRequest(input) {
     identifier: withAccessionNumber(serviceRequest.identifier),
     subject: outboundSubject,
     requester: outboundRequester,
+    note: withNoteAuthor(serviceRequest.note, outboundRequester),
     status: outboundStatus,
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
@@ -224,6 +225,17 @@ async function relayRequester(requester) {
     });
     return undefined;
   }
+}
+
+// OpenMRS sends the order's clinical history as a note with no author, and
+// AdvaPACS rejects the whole ServiceRequest with a 422 "Invalid note: Missing
+// author" -- make the ordering clinician (the requester) the author. With no
+// requester, notes are sent unchanged.
+function withNoteAuthor(notes, requester) {
+  if (!notes || !requester) return notes;
+  return notes.map((note) => (note.authorReference || note.authorString)
+    ? note
+    : { authorReference: { reference: requester.reference }, ...note });
 }
 
 // Only the fields AdvaPACS's Practitioner docs list as supported -- drops
