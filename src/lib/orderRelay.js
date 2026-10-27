@@ -206,13 +206,7 @@ async function relayRequester(requester) {
   try {
     const practitioner = await openmrs.getResource('Practitioner', practitionerId);
 
-    // Matched in AdvaPACS on the OpenMRS provider UUID (the Practitioner's id),
-    // not OpenMRS's own provider identifier: that one is optional and editable,
-    // and its system (http://fhir.openmrs.org/ext/provider/identifier) isn't
-    // registered in AdvaPACS, which (with Assigning Authorities enabled)
-    // rejects any identifier whose system isn't -- so this is the only
-    // identifier sent. ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM must be
-    // registered as an Assigning Authority in AdvaPACS.
+    // Matched in AdvaPACS on the OpenMRS provider UUID
     const uuidIdentifier = { system: ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, value: practitioner.id };
     const outboundPractitioner = { ...toOutboundPractitioner(practitioner), identifier: [uuidIdentifier] };
 
