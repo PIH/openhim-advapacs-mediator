@@ -42,11 +42,12 @@ async function relayServiceRequest(input) {
   }
   // Stamp the same emrIdentifier found above with the HL7 PI coding, then
   // substitute it back into place (by reference) among the patient's other
-  // identifiers, which are otherwise sent through unchanged.
+  // identifiers. System-less identifiers are dropped (see withoutSystemlessIdentifiers);
+  // the rest are sent through unchanged.
   const stampedEmrIdentifier = withPatientInternalIdentifierTypeCoding(emrIdentifier);
   const outboundPatient = {
     ...patient,
-    identifier: patient.identifier.map(
+    identifier: withoutSystemlessIdentifiers(patient.identifier).map(
       (identifier) => identifier === emrIdentifier ? stampedEmrIdentifier : identifier
     )
   };
@@ -164,6 +165,14 @@ function withPatientInternalIdentifierTypeCoding(identifier) {
 function withoutSystemlessCoding(code) {
   if (!code || !Array.isArray(code.coding)) return code;
   return { ...code, coding: code.coding.filter((coding) => coding.system) };
+}
+
+// OpenMRS emits an identifier with no system when its identifier type has no FHIR
+// system mapped (e.g. "MDR-TB ID"), and AdvaPACS rejects the whole Patient with a
+// 422 "Identifier system required" -- drop any such identifiers.
+// TODO: map FHIR systems for these identifier types in OpenMRS instead?
+function withoutSystemlessIdentifiers(identifiers) {
+  return identifiers.filter((identifier) => identifier.system);
 }
 
 // AdvaPACS's R5 ServiceRequest.code is a CodeableReference ({ concept, reference }),

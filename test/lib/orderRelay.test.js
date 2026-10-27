@@ -374,6 +374,45 @@ describe('orderRelay', () => {
     });
   });
 
+  describe('dropping system-less identifiers from the outbound Patient (AdvaPACS 422s with "Identifier system required")', () => {
+    const systemlessIdentifier = {
+      use: 'usual',
+      type: { coding: [{ code: '4ca30944-cfb4-4dfa-b0df-18f023351fad' }], text: 'MDR-TB ID' },
+      value: 'GLC/LS0002'
+    };
+
+    test('drops an identifier that has no system, keeping the EMR-ID identifier', async () => {
+      openmrs.getPatient.mockResolvedValue({
+        ...patientWithEmrId,
+        identifier: [...patientWithEmrId.identifier, systemlessIdentifier]
+      });
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
+      expect(outboundPatientArg.identifier).toHaveLength(1);
+      expect(outboundPatientArg.identifier[0].system).toBe('http://www.pih.org/identifiers/lesotho/emr-id');
+    });
+
+    test('keeps other identifiers that do have a system', async () => {
+      openmrs.getPatient.mockResolvedValue({
+        ...patientWithEmrId,
+        identifier: [...patientWithEmrId.identifier, systemlessIdentifier, unrelatedIdentifier]
+      });
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
+      expect(outboundPatientArg.identifier).toHaveLength(2);
+      expect(outboundPatientArg.identifier).toContainEqual(unrelatedIdentifier);
+      expect(outboundPatientArg.identifier).not.toContainEqual(systemlessIdentifier);
+    });
+  });
+
   describe('stripping the system-less OpenMRS concept coding and wrapping ServiceRequest.code as a CodeableReference (AdvaPACS R5 requires code.concept, not a flat CodeableConcept)', () => {
     test('wraps the stripped coding/text under code.concept, keeping only system-bearing codings', async () => {
       openmrs.getPatient.mockResolvedValue(patientWithEmrId);
