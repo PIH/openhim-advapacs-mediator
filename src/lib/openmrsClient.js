@@ -2,6 +2,7 @@ const axios = require('axios');
 const logger = require('./logger');
 
 const baseURL = `${process.env.OPENMRS_BASE_URL}${process.env.OPENMRS_FHIR_PATH || '/ws/fhir2/R4'}`;
+const restBaseURL = `${process.env.OPENMRS_BASE_URL}/ws/rest/v1`;
 
 const client = axios.create({
   baseURL,
@@ -67,7 +68,21 @@ async function searchServiceRequests({ status, lastUpdatedAfter } = {}) {
   return data;
 }
 
+/**
+ * The order's clinical history (indications), from the OpenMRS REST API: fhir2 doesn't put
+ * TestOrder.clinicalHistory on the ServiceRequest. The FHIR ServiceRequest id is the order uuid.
+ * Resolves to the text, or null when the order has none.
+ */
+async function getOrderClinicalHistory(orderUuid) {
+  const { data } = await client.get(`${restBaseURL}/order/${orderUuid}`, {
+    params: { v: 'custom:(clinicalHistory)' },
+    headers: { Accept: 'application/json' }
+  });
+  return (data && data.clinicalHistory) || null;
+}
+
 module.exports = {
+  getOrderClinicalHistory,
   getResource,
   getPatient,
   createResource,

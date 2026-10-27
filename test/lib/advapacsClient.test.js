@@ -61,6 +61,26 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'Patient', id: 'advapacs-p1' });
   });
 
+  test('upsertPatient keeps the identifiers another site added, replacing only the systems this site sends', async () => {
+    const emr = 'http://www.pih.org/identifiers/lesotho/emr-id';
+    const otherSite = { system: 'http://openmrs.org/identifier', value: '01JCJ8' };
+    const patient = { resourceType: 'Patient', id: 'p1', identifier: [{ system: emr, value: 'CAAKH7' }] };
+    mockClient.get.mockResolvedValue({
+      data: { total: 1, entry: [{ resource: {
+        resourceType: 'Patient', id: 'advapacs-p1',
+        identifier: [{ system: emr, value: 'CAAKH7', id: 'old' }, otherSite]
+      } }] }
+    });
+    mockClient.put.mockResolvedValue({ data: { resourceType: 'Patient', id: 'advapacs-p1' } });
+
+    await advapacs.upsertPatient(patient, emr, 'CAAKH7');
+
+    expect(mockClient.put).toHaveBeenCalledWith('/Patient/advapacs-p1', {
+      resourceType: 'Patient', id: 'advapacs-p1',
+      identifier: [{ system: emr, value: 'CAAKH7' }, otherSite]
+    });
+  });
+
   test('upsertPatient POSTs to /Patient (create) when the search finds no match', async () => {
     const patient = { resourceType: 'Patient', id: 'p1' };
     mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', total: 0, entry: [] } });
@@ -110,6 +130,20 @@ describe('advapacsClient', () => {
 
     expect(mockClient.post).toHaveBeenCalledWith('/ServiceRequest', serviceRequest);
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
+  });
+
+  test('findServiceRequestByIdentifier searches by system|value and returns the first match', async () => {
+    mockClient.get.mockResolvedValue({ data: { total: 1, entry: [{ resource: { resourceType: 'ServiceRequest', id: 'advapacs-sr1' } }] } });
+
+    const result = await advapacs.findServiceRequestByIdentifier('http://example.org/acc', 'A1');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', { params: { identifier: 'http://example.org/acc|A1' } });
+    expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
+  });
+
+  test('findServiceRequestByIdentifier returns null when there is no match', async () => {
+    mockClient.get.mockResolvedValue({ data: { total: 0 } });
+    expect(await advapacs.findServiceRequestByIdentifier('http://example.org/acc', 'A1')).toBeNull();
   });
 
   test('ensureSubscription posts a Subscription with the webhook endpoint and bearer secret', async () => {

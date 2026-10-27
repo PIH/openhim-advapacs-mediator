@@ -98,4 +98,21 @@ describe('openmrsClient', () => {
 
     expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', { params: {} });
   });
+
+  test('getOrderClinicalHistory reads clinicalHistory from the REST order resource', async () => {
+    mockClient.get.mockResolvedValue({ data: { clinicalHistory: 'Cough 3 weeks' } });
+
+    const result = await openmrs.getOrderClinicalHistory('order-uuid');
+
+    expect(mockClient.get).toHaveBeenCalledWith(
+      'http://localhost:8080/openmrs/ws/rest/v1/order/order-uuid',
+      { params: { v: 'custom:(clinicalHistory)' }, headers: { Accept: 'application/json' } }
+    );
+    expect(result).toBe('Cough 3 weeks');
+  });
+
+  test('getOrderClinicalHistory resolves to null when the order has none', async () => {
+    mockClient.get.mockResolvedValue({ data: { clinicalHistory: null } });
+    expect(await openmrs.getOrderClinicalHistory('order-uuid')).toBeNull();
+  });
 });
