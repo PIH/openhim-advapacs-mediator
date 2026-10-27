@@ -251,6 +251,43 @@ describe('orderRelay', () => {
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.requester).toBeUndefined();
     });
+
+    describe('note author (AdvaPACS 422s with "Invalid note: Missing author")', () => {
+      const clinicalHistoryNote = { text: 'Cough for 3 weeks' };
+
+      test('sets the requester as the author of a note that has none (OpenMRS sends clinical history as an authorless note)', async () => {
+        await orderRelay.relayServiceRequest({ ...serviceRequestWithRequester, note: [clinicalHistoryNote] });
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.note).toEqual([{
+          authorReference: { reference: 'Practitioner/advapacs-practitioner-1' },
+          text: 'Cough for 3 weeks'
+        }]);
+      });
+
+      test('leaves a note that already has an author unchanged', async () => {
+        const authoredNote = { authorString: 'Someone Else', text: 'Cough for 3 weeks' };
+
+        await orderRelay.relayServiceRequest({ ...serviceRequestWithRequester, note: [authoredNote] });
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.note).toEqual([authoredNote]);
+      });
+
+      test('sends the note unchanged when there is no requester to author it', async () => {
+        await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, note: [clinicalHistoryNote] });
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.note).toEqual([clinicalHistoryNote]);
+      });
+
+      test('does not throw and sends no note when there is none', async () => {
+        await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.note).toBeUndefined();
+      });
+    });
   });
 
   test('throws when the patient has no identifier matching ADVAPACS_PATIENT_IDENTIFIER_SYSTEM, and never sends the ServiceRequest', async () => {
