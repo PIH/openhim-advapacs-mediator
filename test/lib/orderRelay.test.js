@@ -43,7 +43,7 @@ describe('orderRelay', () => {
     jest.clearAllMocks();
 
     process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
-    process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/provider-id';
+    process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/provider-uuid';
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
@@ -124,7 +124,7 @@ describe('orderRelay', () => {
       meta: { lastUpdated: '2026-08-03T16:29:49.000-04:00' },
       text: { status: 'generated', div: '<div/>' },
       extension: [{ url: 'http://fhir.openmrs.org/ext/provider/role', valueString: 'Clinician' }],
-      identifier: [{ id: 'omrs-identifier-uuid', value: 'PROV-1' }],
+      identifier: [{ system: 'http://fhir.openmrs.org/ext/provider/identifier', value: 'PROV-1' }],
       name: [{ family: 'Herb', given: ['Phil'] }],
       gender: 'male'
     };
@@ -147,29 +147,36 @@ describe('orderRelay', () => {
       expect(openmrs.getResource).toHaveBeenCalledWith('Practitioner', 'omrs-practitioner-uuid');
     });
 
-    test('upserts the Practitioner into AdvaPACS, matched on its identifier stamped with ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, sending only the fields AdvaPACS supports', async () => {
+    test('upserts the Practitioner into AdvaPACS, matched on its OpenMRS provider UUID under ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, sending only the fields AdvaPACS supports', async () => {
       await orderRelay.relayServiceRequest(serviceRequestWithRequester);
 
       expect(advapacs.upsertPractitioner).toHaveBeenCalledWith({
         resourceType: 'Practitioner',
-        identifier: [{ id: 'omrs-identifier-uuid', system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }],
+        identifier: [{ system: 'http://www.pih.org/identifiers/lesotho/provider-uuid', value: 'omrs-practitioner-uuid' }],
         name: [{ family: 'Herb', given: ['Phil'] }],
         gender: 'male'
-      }, 'http://www.pih.org/identifiers/lesotho/provider-id', 'PROV-1');
+      }, 'http://www.pih.org/identifiers/lesotho/provider-uuid', 'omrs-practitioner-uuid');
     });
 
-    test('sends only the stamped identifier, dropping any others (AdvaPACS 422s on any unregistered identifier system)', async () => {
-      openmrs.getResource.mockResolvedValue({
-        ...openmrsPractitioner,
-        identifier: [...openmrsPractitioner.identifier, { system: 'http://example.org/other-id', value: 'OTHER-1' }]
-      });
-
+    test('sends only the provider-UUID identifier, not OpenMRS\'s own provider identifier (AdvaPACS 422s on any unregistered identifier system)', async () => {
       await orderRelay.relayServiceRequest(serviceRequestWithRequester);
 
       const [outboundPractitionerArg] = advapacs.upsertPractitioner.mock.calls[0];
       expect(outboundPractitionerArg.identifier).toEqual([
-        { id: 'omrs-identifier-uuid', system: 'http://www.pih.org/identifiers/lesotho/provider-id', value: 'PROV-1' }
+        { system: 'http://www.pih.org/identifiers/lesotho/provider-uuid', value: 'omrs-practitioner-uuid' }
       ]);
+    });
+
+    test('still matches on the provider UUID when the provider has no OpenMRS identifier', async () => {
+      openmrs.getResource.mockResolvedValue({ ...openmrsPractitioner, identifier: [] });
+
+      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+
+      expect(advapacs.upsertPractitioner).toHaveBeenCalledWith(
+        expect.anything(), 'http://www.pih.org/identifiers/lesotho/provider-uuid', 'omrs-practitioner-uuid'
+      );
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester.reference).toBe('Practitioner/advapacs-practitioner-1');
     });
 
     test('sends no requester, and fetches no Practitioner, when ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM is not set', async () => {
@@ -231,16 +238,6 @@ describe('orderRelay', () => {
       });
 
       expect(openmrs.getResource).not.toHaveBeenCalled();
-      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
-      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(outboundArg.requester).toBeUndefined();
-    });
-
-    test('still sends the ServiceRequest, without a requester, when the Practitioner has no identifier to upsert by', async () => {
-      openmrs.getResource.mockResolvedValue({ ...openmrsPractitioner, identifier: [] });
-
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
-
       expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.requester).toBeUndefined();
