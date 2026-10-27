@@ -592,9 +592,10 @@ describe('orderRelay', () => {
       });
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      // the remaining codings take the order's name, since the dropped coding carried it
       expect(outboundArg.code.concept.coding).toEqual([
-        { system: 'http://loinc.org', code: '26148-7' },
-        { system: 'http://snomed.info/sct', code: '3581000087107' }
+        { system: 'http://loinc.org', code: '26148-7', display: 'Forearm - Left (X-ray)' },
+        { system: 'http://snomed.info/sct', code: '3581000087107', display: 'Forearm - Left (X-ray)' }
       ]);
       expect(outboundArg.code.concept.text).toBe('Forearm - Left (X-ray)');
     });
@@ -711,5 +712,183 @@ describe('orderRelay', () => {
       expect(outboundArg).not.toHaveProperty('meta');
       expect(outboundArg).not.toHaveProperty('text');
     });
+  });
+  describe('clinical history (orderDetail clinical-history)', () => {
+    const PARAM_SYSTEM = 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code';
+    const paramCodes = (sr) => sr.orderDetail[0].parameter.map((p) => p.code.coding[0].code);
+
+    beforeEach(() => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('looks up the clinical history by the ServiceRequest id (the OpenMRS order uuid)', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue('Cough 3 weeks');
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      expect(openmrs.getOrderClinicalHistory).toHaveBeenCalledWith('sr1');
+    });
+
+    test('adds a clinical-history parameter after modality when the order has one', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue('Cough 3 weeks, r/o TB');
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter[1]).toEqual({
+        code: { coding: [{ system: PARAM_SYSTEM, code: 'clinical-history' }] },
+        valueString: 'Cough 3 weeks, r/o TB'
+      });
+    });
+
+    test('sends only the modality parameter when the order has no clinical history', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue(null);
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(paramCodes(outboundArg)).toEqual(['modality']);
+    });
+
+    test('still sends the order, without clinical history, when the lookup fails', async () => {
+      openmrs.getOrderClinicalHistory.mockRejectedValue(new Error('REST down'));
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(paramCodes(outboundArg)).toEqual(['modality']);
+    });
+  });
+
+  describe('optional per-site settings', () => {
+    const orderUuid = '94e66d46-f890-4819-942e-de4a78846a28';
+
+    const clear = () => {
+      delete process.env.ADVAPACS_PERFORMER_REFERENCE;
+      delete process.env.ADVAPACS_ASSIGN_STUDY_UID;
+    };
+    afterEach(clear);
+
+    beforeEach(() => {
+      clear();
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('adds neither a performer nor a study UID when unset (default)', async () => {
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg).not.toHaveProperty('performer');
+      expect(outboundArg.identifier.some((i) => i.system === 'urn:dicom:uid')).toBe(false);
+    });
+
+    test('sets the performer from ADVAPACS_PERFORMER_REFERENCE', async () => {
+      process.env.ADVAPACS_PERFORMER_REFERENCE = 'Device/site-cr';
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.performer).toEqual([{ reference: 'Device/site-cr' }]);
+    });
+
+    test('adds a Study Instance UID derived from the order uuid when ADVAPACS_ASSIGN_STUDY_UID=true', async () => {
+      process.env.ADVAPACS_ASSIGN_STUDY_UID = 'true';
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      const uid = outboundArg.identifier.find((i) => i.system === 'urn:dicom:uid');
+      expect(uid.value).toBe(`urn:oid:2.25.${BigInt('0x94e66d46f8904819942ede4a78846a28').toString()}`);
+      expect(uid.value.length - 'urn:oid:'.length).toBeLessThanOrEqual(64);   // DICOM UI limit
+    });
+  });
+
+  describe('order identifier namespaces (overridable per site)', () => {
+    const placer = {
+      type: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v2-0203', code: 'PLAC' }] },
+      value: '0000000166'
+    };
+
+    afterEach(() => {
+      delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+      delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
+    });
+
+    const relay = async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, identifier: [placer] });
+      return advapacs.createServiceRequest.mock.calls[0][0];
+    };
+
+    test('defaults to the PIH Lesotho order-number and accession systems', async () => {
+      const sr = await relay();
+      expect(sr.identifier.map((i) => i.system)).toEqual([
+        'http://www.pih.org/identifiers/lesotho/radiology-order-number',
+        'http://www.pih.org/identifiers/lesotho/radiology-accession-number'
+      ]);
+    });
+
+    test('uses the site systems when ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM / ADVAPACS_ACCESSION_NUMBER_SYSTEM are set', async () => {
+      process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM = 'http://imladrislab.org/accession-number';
+      process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'http://imladrislab.org/order-number';
+      jest.resetModules();
+      openmrs = require('../../src/lib/openmrsClient');
+      advapacs = require('../../src/lib/advapacsClient');
+      orderRelay = require('../../src/lib/orderRelay');
+
+      const sr = await relay();
+      expect(sr.identifier.map((i) => [i.system, i.value])).toEqual([
+        ['http://imladrislab.org/order-number', '0000000166'],
+        ['http://imladrislab.org/accession-number', '0000000166']
+      ]);
+    });
+  });
+
+  describe('order already in AdvaPACS (poller sees updated orders again)', () => {
+    const placer = {
+      type: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v2-0203', code: 'PLAC' }] },
+      value: '0000000166'
+    };
+
+    test('does not create the order again when AdvaPACS already has its accession', async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.findServiceRequestByIdentifier.mockResolvedValue({ id: 'advapacs-sr-existing' });
+
+      const result = await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, identifier: [placer] });
+
+      expect(advapacs.findServiceRequestByIdentifier).toHaveBeenCalledWith(
+        'http://www.pih.org/identifiers/lesotho/radiology-accession-number', '0000000166');
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+      expect(result.created).toEqual({ id: 'advapacs-sr-existing' });
+    });
+
+    test('creates the order when AdvaPACS has no order with its accession', async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.findServiceRequestByIdentifier.mockResolvedValue(null);
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, identifier: [placer] });
+
+      expect(advapacs.createServiceRequest).toHaveBeenCalled();
+    });
+  });
+
+  test('gives system-bearing codings the order name (code.text) when they have no display', async () => {
+    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+    advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+    await orderRelay.relayServiceRequest({
+      ...serviceRequestWithSubject,
+      code: {
+        coding: [
+          { code: 'fc6de1c0', display: 'Chest, 1 view (X-ray)' },
+          { system: 'http://loinc.org', code: '36554-4' },
+          { system: 'http://snomed.info/sct', code: '399208008', display: 'Plain chest X-ray' }
+        ],
+        text: 'Chest, 1 view (X-ray)'
+      }
+    });
+
+    const [sr] = advapacs.createServiceRequest.mock.calls[0];
+    expect(sr.code.concept.coding).toEqual([
+      { system: 'http://loinc.org', code: '36554-4', display: 'Chest, 1 view (X-ray)' },
+      { system: 'http://snomed.info/sct', code: '399208008', display: 'Plain chest X-ray' }
+    ]);
   });
 });
