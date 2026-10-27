@@ -77,14 +77,13 @@ async function relayServiceRequest(input) {
   const outboundStatus = serviceRequest.status === 'completed' ? 'draft' : serviceRequest.status;
 
   // strip out the OpenMRS-specific and OpenMRS Reference fields we don't want to send to AdvaPACS
-  const { encounter, requester, occurrencePeriod, id, meta, text, ...serviceRequestWithoutStrippedFields } = serviceRequest;
+  const { encounter, requester, occurrencePeriod, id, meta, text, note, ...serviceRequestWithoutStrippedFields } = serviceRequest;
 
   const outboundServiceRequest = {
     ...serviceRequestWithoutStrippedFields,
     identifier: withAccessionNumber(serviceRequest.identifier),
     subject: outboundSubject,
     requester: outboundRequester,
-    note: withNoteAuthor(serviceRequest.note, outboundRequester),
     status: outboundStatus,
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
@@ -102,7 +101,7 @@ async function relayServiceRequest(input) {
       parameter: [{
         code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'modality' }] },
         valueString: 'CR'
-      }]
+      }, ...clinicalHistoryParameters(note)]
     }]
   };
 
@@ -227,15 +226,18 @@ async function relayRequester(requester) {
   }
 }
 
-// OpenMRS sends the order's clinical history as a note with no author, and
-// AdvaPACS rejects the whole ServiceRequest with a 422 "Invalid note: Missing
-// author" -- make the ordering clinician (the requester) the author. With no
-// requester, notes are sent unchanged.
-function withNoteAuthor(notes, requester) {
-  if (!notes || !requester) return notes;
-  return notes.map((note) => (note.authorReference || note.authorString)
-    ? note
-    : { authorReference: { reference: requester.reference }, ...note });
+// OpenMRS sends the order's clinical history as a note (with no author, which
+// AdvaPACS 422s on), but AdvaPACS only shows clinical history from an
+// orderDetail "clinical-history" parameter -- so the note is stripped and its
+// text sent as that parameter instead.
+function clinicalHistoryParameters(notes = []) {
+  const clinicalHistory = notes.map((note) => note.text).filter(Boolean).join('\n');
+  return clinicalHistory
+    ? [{
+      code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'clinical-history' }] },
+      valueString: clinicalHistory
+    }]
+    : [];
 }
 
 // Only the fields AdvaPACS's Practitioner docs list as supported -- drops
