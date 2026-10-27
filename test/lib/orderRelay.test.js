@@ -675,4 +675,79 @@ describe('orderRelay', () => {
       expect(outboundArg).not.toHaveProperty('text');
     });
   });
+  describe('clinical history (orderDetail clinical-history)', () => {
+    const PARAM_SYSTEM = 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code';
+    const paramCodes = (sr) => sr.orderDetail[0].parameter.map((p) => p.code.coding[0].code);
+
+    beforeEach(() => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('looks up the clinical history by the ServiceRequest id (the OpenMRS order uuid)', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue('Cough 3 weeks');
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      expect(openmrs.getOrderClinicalHistory).toHaveBeenCalledWith('sr1');
+    });
+
+    test('adds a clinical-history parameter after modality when the order has one', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue('Cough 3 weeks, r/o TB');
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter[1]).toEqual({
+        code: { coding: [{ system: PARAM_SYSTEM, code: 'clinical-history' }] },
+        valueString: 'Cough 3 weeks, r/o TB'
+      });
+    });
+
+    test('sends only the modality parameter when the order has no clinical history', async () => {
+      openmrs.getOrderClinicalHistory.mockResolvedValue(null);
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(paramCodes(outboundArg)).toEqual(['modality']);
+    });
+
+    test('still sends the order, without clinical history, when the lookup fails', async () => {
+      openmrs.getOrderClinicalHistory.mockRejectedValue(new Error('REST down'));
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(paramCodes(outboundArg)).toEqual(['modality']);
+    });
+  });
+
+  describe('optional per-site settings', () => {
+    const orderUuid = '94e66d46-f890-4819-942e-de4a78846a28';
+
+    beforeEach(() => {
+      delete process.env.ADVAPACS_PERFORMER_REFERENCE;
+      delete process.env.ADVAPACS_ASSIGN_STUDY_UID;
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('adds neither a performer nor a study UID when unset (default)', async () => {
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg).not.toHaveProperty('performer');
+      expect(outboundArg.identifier.some((i) => i.system === 'urn:dicom:uid')).toBe(false);
+    });
+
+    test('sets the performer from ADVAPACS_PERFORMER_REFERENCE', async () => {
+      process.env.ADVAPACS_PERFORMER_REFERENCE = 'Device/site-cr';
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.performer).toEqual([{ reference: 'Device/site-cr' }]);
+    });
+
+    test('adds a Study Instance UID derived from the order uuid when ADVAPACS_ASSIGN_STUDY_UID=true', async () => {
+      process.env.ADVAPACS_ASSIGN_STUDY_UID = 'true';
+      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, id: orderUuid });
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      const uid = outboundArg.identifier.find((i) => i.system === 'urn:dicom:uid');
+      expect(uid.value).toBe(`urn:oid:2.25.${BigInt('0x94e66d46f8904819942ede4a78846a28').toString()}`);
+      expect(uid.value.length - 'urn:oid:'.length).toBeLessThanOrEqual(64);   // DICOM UI limit
+    });
+  });
 });
