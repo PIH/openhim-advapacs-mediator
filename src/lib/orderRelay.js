@@ -226,10 +226,9 @@ async function relayRequester(requester) {
   }
 }
 
-// OpenMRS sends the order's clinical history as a note (with no author, which
-// AdvaPACS 422s on), but AdvaPACS only shows clinical history from an
-// orderDetail "clinical-history" parameter -- so the note is stripped and its
-// text sent as that parameter instead.
+// OpenMRS sends the order's clinical history as a note, but we do the following
+// conversion so it shows up in AdvaPACS under the "clinical history" section of the report
+// rather than as a note, see comments on: https://pihemr.atlassian.net/browse/UHM-9434
 function clinicalHistoryParameters(notes = []) {
   const clinicalHistory = notes.map((note) => note.text).filter(Boolean).join('\n');
   return clinicalHistory
