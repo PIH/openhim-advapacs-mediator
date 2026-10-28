@@ -101,7 +101,7 @@ async function relayServiceRequest(input) {
       parameter: [{
         code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'modality' }] },
         valueString: 'CR'
-      }, ...clinicalHistoryParameters(note)]
+      }, ...clinicalHistoryParameters(note), ...procedureDescriptionParameters(serviceRequest.code)]
     }]
   };
 
@@ -235,6 +235,21 @@ function clinicalHistoryParameters(notes = []) {
     ? [{
       code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'clinical-history' }] },
       valueString: clinicalHistory
+    }]
+    : [];
+}
+
+// AdvaPACS keeps only the system and code of code.concept.coding[0], dropping
+// code.concept.text and any coding display -- so the procedure name is sent as a
+// "requested-procedure-description" parameter instead, see UHM-9631.
+// "requested-procedure-description" is AdvaPACS-specific, not a standard FHIR code: it comes
+// from AdvaPACS's own orderDetail parameter code system (ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM)
+function procedureDescriptionParameters(code) {
+  const description = code && code.text;
+  return description
+    ? [{
+      code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'requested-procedure-description' }] },
+      valueString: description
     }]
     : [];
 }
