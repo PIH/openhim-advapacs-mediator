@@ -708,6 +708,75 @@ describe('orderRelay', () => {
     });
   });
 
+  describe('procedure description (AdvaPACS drops code.concept.text; reads it from an orderDetail "requested-procedure-description" parameter)', () => {
+    const procedureDescriptionParameter = (text) => ({
+      code: {
+        coding: [{
+          system: 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code',
+          code: 'requested-procedure-description'
+        }]
+      },
+      valueString: text
+    });
+
+    beforeEach(() => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('adds the code text as a requested-procedure-description parameter, after the modality', async () => {
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }], text: 'Chest, 1 view (X-ray)' }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter).toHaveLength(2);
+      expect(outboundArg.orderDetail[0].parameter[0].code.coding[0].code).toBe('modality');
+      expect(outboundArg.orderDetail[0].parameter[1]).toEqual(procedureDescriptionParameter('Chest, 1 view (X-ray)'));
+    });
+
+    test('still sends the code text under code.concept as well', async () => {
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }], text: 'Chest, 1 view (X-ray)' }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.code.concept.text).toBe('Chest, 1 view (X-ray)');
+    });
+
+    test('comes after the clinical-history parameter when both are present', async () => {
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: { text: 'Chest, 1 view (X-ray)' },
+        note: [{ text: 'Cough for 3 weeks' }]
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter.map((p) => p.code.coding[0].code))
+        .toEqual(['modality', 'clinical-history', 'requested-procedure-description']);
+    });
+
+    test('adds no requested-procedure-description parameter when the code has no text', async () => {
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }] }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter).toHaveLength(1);
+    });
+
+    test('adds no requested-procedure-description parameter when there is no code at all', async () => {
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.orderDetail[0].parameter).toHaveLength(1);
+    });
+  });
+
   describe('stripping id/meta/text (debugging persistent "missing modality" error)', () => {
     test('strips id, meta, and text from the outbound ServiceRequest', async () => {
       openmrs.getPatient.mockResolvedValue(patientWithEmrId);
