@@ -1,6 +1,7 @@
 const logger = require('./logger');
 const openmrs = require('./openmrsClient');
 const advapacs = require('./advapacsClient');
+const { resolveSiteLocationReference } = require('./siteLocation');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
@@ -28,6 +29,11 @@ async function relayServiceRequest(input) {
   const serviceRequest = input.resourceType === 'ServiceRequest'
     ? input
     : await openmrs.getResource('ServiceRequest', input.serviceRequestId);
+
+  // The AdvaPACS Site the order belongs to, from its OpenMRS Visit Location (see siteLocation.js).
+  // Worked out before anything is sent, so if it can't be, AdvaPACS is left untouched and the
+  // order can be re-run from OpenHIM once fixed
+  const locationReference = await resolveSiteLocationReference(serviceRequest);
 
   const patientRef = serviceRequest.subject && serviceRequest.subject.reference;
   const patientId = patientRef && patientRef.split('/').pop();
@@ -88,6 +94,7 @@ async function relayServiceRequest(input) {
     subject: outboundSubject,
     requester: outboundRequester,
     status: outboundStatus,
+    ...(locationReference && { locationReference }),
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
     code: toCodeableReference(withoutDicomCoding(withoutSystemlessCoding(serviceRequest.code))),
