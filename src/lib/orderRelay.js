@@ -15,6 +15,9 @@ const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = 'PI';
 
 const ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM = 'http://advapacs.com/fhir/servicerequest-orderdetail-parameter-code';
 
+const DICOM_CODE_SYSTEM = 'http://dicom.nema.org/resources/ontology/DCM';
+const DEFAULT_MODALITY = 'CR';
+
 /**
  * Core order-relay logic, independent of how the ServiceRequest arrived
  * (HTTP push from routes/serviceRequest.js, or a scheduled poll from
@@ -87,20 +90,15 @@ async function relayServiceRequest(input) {
     status: outboundStatus,
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
-    code: toCodeableReference(withoutSystemlessCoding(serviceRequest.code)),
+    code: toCodeableReference(withoutDicomCoding(withoutSystemlessCoding(serviceRequest.code))),
     // AdvaPACS only accepts the occurrenceDateTime variant of this FHIR choice
     // type, not occurrencePeriod -- collapse to a single instant via .start
     // (OpenMRS only ever sends a point-in-time period, start === end).
     occurrenceDateTime: serviceRequest.occurrenceDateTime || (occurrencePeriod && occurrencePeriod.start),
-    // TODO(UHM-9445): hardcoded to X-ray (modality "CR") -- every order this
-    // integration currently handles is an X-ray. OpenMRS's ServiceRequest
-    // carries no field indicating imaging modality today, so there's nothing
-    // to derive this from yet. Replace with a real per-order-type modality
-    // mapping once that ticket is scoped.
     orderDetail: [{
       parameter: [{
         code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'modality' }] },
-        valueString: 'CR'
+        valueString: modalityOf(serviceRequest.code)
       }, ...clinicalHistoryParameters(note), ...procedureDescriptionParameters(serviceRequest.code)]
     }]
   };
@@ -179,6 +177,23 @@ function withoutSystemlessCoding(code) {
 // TODO: map FHIR systems for these identifier types in OpenMRS instead?
 function withoutSystemlessIdentifiers(identifiers) {
   return identifiers.filter((identifier) => identifier.system);
+}
+
+// The orderable's imaging modality comes from its concept mapping to the DICOM code
+// system (UHM-9634), which OpenMRS sends as one of the ServiceRequest.code codings.
+// Falls back to X-ray ("CR") for orderables without one.
+function modalityOf(code) {
+  const dicomCoding = code && Array.isArray(code.coding) &&
+    code.coding.find((coding) => coding.system === DICOM_CODE_SYSTEM && coding.code);
+  return dicomCoding ? dicomCoding.code : DEFAULT_MODALITY;
+}
+
+// The DICOM modality coding is sent as AdvaPACS's "modality" parameter instead (see
+// modalityOf), so drop it from code -- it isn't a procedure code, and AdvaPACS only
+// keeps code.concept.coding[0], so it mustn't end up first.
+function withoutDicomCoding(code) {
+  if (!code || !Array.isArray(code.coding)) return code;
+  return { ...code, coding: code.coding.filter((coding) => coding.system !== DICOM_CODE_SYSTEM) };
 }
 
 // AdvaPACS's R5 ServiceRequest.code is a CodeableReference ({ concept, reference }),

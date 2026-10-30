@@ -80,8 +80,9 @@ they need your actual data model, not boilerplate:
   a `ServiceRequest` past AdvaPACS's validation — accession-number
   identifier duplication (UHM-9437/9439/9440), an HL7 "PI" coding stamped
   onto the patient's EMR-ID identifier (UHM-9443), and the imaging modality
-  hardcoded to X-ray/`CR` since OpenMRS doesn't expose it today (UHM-9445).
-  See the `TODO`/`HACK`/`EXPERIMENT` comments in `orderRelay.js` for the
+  defaulting to X-ray/`CR` when the orderable has no DICOM
+  (`http://dicom.nema.org/resources/ontology/DCM`) coding to take it from
+  (UHM-9445, UHM-9634). See the `TODO`/`HACK`/`EXPERIMENT` comments in `orderRelay.js` for the
   reasoning and ticket numbers behind each.
 
 ## Known limitations

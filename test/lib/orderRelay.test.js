@@ -634,8 +634,12 @@ describe('orderRelay', () => {
     });
   });
 
-  describe('hardcoded modality on the outbound ServiceRequest (stopgap, UHM-9445)', () => {
-    test('adds a hardcoded CR (X-ray) modality parameter, identified by AdvaPACS\'s "modality" code with a valueString', async () => {
+  describe('modality on the outbound ServiceRequest, from the orderable\'s DICOM coding (UHM-9445)', () => {
+    const DICOM_CODE_SYSTEM = 'http://dicom.nema.org/resources/ontology/DCM';
+    const modalityOf = (outboundArg) => outboundArg.orderDetail[0].parameter
+      .find((parameter) => parameter.code.coding[0].code === 'modality').valueString;
+
+    test('defaults to a CR (X-ray) modality parameter, identified by AdvaPACS\'s "modality" code with a valueString, when there is no code', async () => {
       openmrs.getPatient.mockResolvedValue(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
@@ -654,6 +658,65 @@ describe('orderRelay', () => {
           valueString: 'CR'
         }]
       }]);
+    });
+
+    test('uses the code of the DICOM coding as the modality', async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: {
+          coding: [
+            { system: 'http://loinc.org', code: '24627-2' },
+            { system: DICOM_CODE_SYSTEM, code: 'CT' }
+          ]
+        }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(modalityOf(outboundArg)).toBe('CT');
+    });
+
+    test('drops the DICOM coding from the outbound code, even when it comes first', async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: {
+          coding: [
+            { system: DICOM_CODE_SYSTEM, code: 'DX' },
+            { system: 'http://loinc.org', code: '36554-4' },
+            { system: 'http://snomed.info/sct', code: '399208008' }
+          ],
+          text: 'Chest, 1 view (X-ray)'
+        }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(modalityOf(outboundArg)).toBe('DX');
+      expect(outboundArg.code.concept.coding).toEqual([
+        { system: 'http://loinc.org', code: '36554-4' },
+        { system: 'http://snomed.info/sct', code: '399208008' }
+      ]);
+      expect(outboundArg.code.concept.text).toBe('Chest, 1 view (X-ray)');
+    });
+
+    test('defaults to CR when the code has no DICOM coding', async () => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+      await orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }] }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(modalityOf(outboundArg)).toBe('CR');
     });
   });
 
