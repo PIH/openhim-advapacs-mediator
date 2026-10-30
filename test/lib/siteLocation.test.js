@@ -217,6 +217,16 @@ describe('siteLocation', () => {
       await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/not found/);
     });
 
+    test('matches the Site\'s Organisation by id, also when managingOrganization is an absolute reference', async () => {
+      advapacs.searchLocations.mockResolvedValue([
+        { ...moteSite, managingOrganization: { reference: 'https://advapacs.example.com/fhir/R5/Organization/org1' } }
+      ]);
+
+      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+
+      expect(result).toEqual([{ reference: 'Location/site-mote' }]);
+    });
+
     test('throws when the Site code matches more than one AdvaPACS Site', async () => {
       advapacs.searchLocations.mockResolvedValue([moteSite, { ...moteSite, id: 'site-mote-2' }]);
 

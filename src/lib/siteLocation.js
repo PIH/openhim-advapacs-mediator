@@ -104,7 +104,7 @@ async function resolveSiteId(siteCode) {
   // search parameter: a Site from another Organisation (e.g. production's, on a demo mediator)
   // must never match
   const sites = (await advapacs.searchLocations(siteCode, orgId)).filter(
-    (site) => !orgId || (site.managingOrganization && site.managingOrganization.reference) === `Organization/${orgId}`
+    (site) => !orgId || idOf(site.managingOrganization) === orgId
   );
   if (sites.length === 0) {
     throw new Error(`AdvaPACS Site ${siteCode} not found` + (ORGANIZATION ? ` in Organisation ${ORGANIZATION}` : ''));
