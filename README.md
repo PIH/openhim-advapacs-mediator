@@ -73,9 +73,18 @@ they need your actual data model, not boilerplate:
   (`orderRelay.js` references the patient via AdvaPACS's own Patient id —
   see Flow), and `encounter`/`requester` (Practitioner) references are
   dropped from the outbound `ServiceRequest` entirely, since AdvaPACS can't
-  resolve OpenMRS UUIDs for either. `Location` references aren't handled at
-  all yet — confirm what AdvaPACS expects there if/when that becomes
-  relevant.
+  resolve OpenMRS UUIDs for either.
+- **AdvaPACS Site (UHM-9468)**: with AdvaPACS's Organisations & Sites
+  feature on, each order is sent with `locationReference` pointing at the
+  AdvaPACS Site for the OpenMRS Visit Location it was placed under — found
+  by walking from the order's encounter location up `partOf` to the
+  location tagged "Visit Location" (see `siteLocation.js`).
+  `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
+  the optional `ADVAPACS_ORGANIZATION` only accepts Sites in that
+  Organisation (see `.env.example`). There's no fallback Site: an order
+  whose Site can't be determined fails, and can be re-run from OpenHIM once
+  the map (or OpenMRS data) is fixed. With `ADVAPACS_SITE_MAP` unset, no
+  location is sent.
 - **Several other fields are temporarily hardcoded or reshaped** just to get
   a `ServiceRequest` past AdvaPACS's validation — accession-number
   identifier duplication (UHM-9437/9439/9440), an HL7 "PI" coding stamped

@@ -73,6 +73,27 @@ async function upsertPractitioner(practitioner, identifierSystem, identifierValu
 }
 
 /**
+ * Search AdvaPACS's Organisations by identifier. Organisations (groups of
+ * Sites) are read-only over FHIR -- they're set up in AdvaPACS admin.
+ */
+async function searchOrganizations(identifier) {
+  const { data } = await client.get('/Organization', { params: { identifier } });
+  return (data.entry || []).map((entry) => entry.resource);
+}
+
+/**
+ * Search AdvaPACS's Sites (FHIR Locations) by identifier, limited to one
+ * Organisation when organizationId is given. Like Organisations, Sites are
+ * read-only over FHIR and set up in AdvaPACS admin.
+ */
+async function searchLocations(identifier, organizationId) {
+  const params = { identifier };
+  if (organizationId) params.organization = `Organization/${organizationId}`;
+  const { data } = await client.get('/Location', { params });
+  return (data.entry || []).map((entry) => entry.resource);
+}
+
+/**
  * Fetch a resource by absolute reference URL, used when a Subscription
  * notification arrives as a lightweight ping rather than a full resource
  * payload and we need to go fetch the ImagingStudy/DiagnosticReport ourselves.
@@ -106,4 +127,12 @@ async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'Imaging
   return data;
 }
 
-module.exports = { createServiceRequest, upsertPatient, upsertPractitioner, getResourceByUrl, ensureSubscription };
+module.exports = {
+  createServiceRequest,
+  upsertPatient,
+  upsertPractitioner,
+  searchOrganizations,
+  searchLocations,
+  getResourceByUrl,
+  ensureSubscription
+};

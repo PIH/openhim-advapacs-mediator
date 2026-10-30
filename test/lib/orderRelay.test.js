@@ -1,10 +1,12 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../src/lib/openmrsClient');
 jest.mock('../../src/lib/advapacsClient');
+jest.mock('../../src/lib/siteLocation');
 
 describe('orderRelay', () => {
   let openmrs;
   let advapacs;
+  let siteLocation;
   let orderRelay;
 
   const patientWithEmrId = {
@@ -47,6 +49,7 @@ describe('orderRelay', () => {
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
+    siteLocation = require('../../src/lib/siteLocation');
     orderRelay = require('../../src/lib/orderRelay');
   });
 
@@ -115,6 +118,46 @@ describe('orderRelay', () => {
 
     const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
     expect(outboundArg).not.toHaveProperty('encounter');
+  });
+
+  describe('AdvaPACS Site (locationReference), from the order\'s Visit Location', () => {
+    beforeEach(() => {
+      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('sets locationReference to the AdvaPACS Site resolved for the ServiceRequest', async () => {
+      siteLocation.resolveSiteLocationReference.mockResolvedValue([{ reference: 'Location/site-mote' }]);
+
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      expect(siteLocation.resolveSiteLocationReference).toHaveBeenCalledWith(serviceRequestWithSubject);
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.locationReference).toEqual([{ reference: 'Location/site-mote' }]);
+    });
+
+    test('sends no locationReference when no Site is configured', async () => {
+      siteLocation.resolveSiteLocationReference.mockResolvedValue(undefined);
+
+      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg).not.toHaveProperty('locationReference');
+    });
+
+    test('when the Site can\'t be determined, the error propagates and nothing is sent to AdvaPACS', async () => {
+      siteLocation.resolveSiteLocationReference.mockRejectedValue(new Error('Visit Location vl-other is not in ADVAPACS_SITE_MAP'));
+
+      await expect(orderRelay.relayServiceRequest({
+        ...serviceRequestWithSubject,
+        requester: { reference: 'Practitioner/omrs-practitioner-uuid' }
+      })).rejects.toThrow('not in ADVAPACS_SITE_MAP');
+
+      expect(advapacs.upsertPatient).not.toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+    });
   });
 
   describe('ordering clinician (requester) relayed as an AdvaPACS Practitioner', () => {
