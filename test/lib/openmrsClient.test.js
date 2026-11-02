@@ -41,15 +41,6 @@ describe('openmrsClient', () => {
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'sr1' });
   });
 
-  test('getPatient delegates to getResource with resourceType Patient', async () => {
-    mockClient.get.mockResolvedValue({ data: { resourceType: 'Patient', id: 'p1' } });
-
-    const result = await openmrs.getPatient('p1');
-
-    expect(mockClient.get).toHaveBeenCalledWith('/Patient/p1');
-    expect(result).toEqual({ resourceType: 'Patient', id: 'p1' });
-  });
-
   test('createResource POSTs /{resourceType} and returns response data', async () => {
     const resource = { resourceType: 'ImagingStudy' };
     mockClient.post.mockResolvedValue({ data: { resourceType: 'ImagingStudy', id: 'img1' } });

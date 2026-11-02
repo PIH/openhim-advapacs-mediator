@@ -16,12 +16,13 @@ const verifyInboundSecret = requireSharedSecret({
 });
 
 /**
- * Push-based ingestion: expects OpenMRS (or an event listener module sitting
- * on OpenMRS) to POST either a full ServiceRequest resource, or a minimal
- * { serviceRequestId } body if you'd rather keep OpenMRS-side coupling to a
- * single id lookup. The actual relay logic lives in lib/orderRelay.js so it
- * can be shared with lib/orderPoller.js's pull-based ingestion -- see
- * ORDER_INGESTION_MODE in .env.example for switching between the two.
+ * Inbound orders, behind the OpenHIM channel. Accepts either:
+ * - an order Bundle (the ServiceRequest with its Patient, Practitioner, Encounter and Visit), which is
+ *   what lib/orderPoller.js posts for each polled order;
+ * - a minimal { serviceRequestId }, in preparation for an OpenMRS module that pushes the ids of new
+ *   orders to OpenHIM instead of this mediator polling (likely to be removed if push is implemented
+ *   some other way).
+ * The relay logic lives in lib/orderRelay.js -- see ORDER_INGESTION_MODE in .env.example.
  */
 router.post('/fhir/ServiceRequest', verifyInboundSecret, async (req, res) => {
   try {

@@ -13,21 +13,12 @@ const client = axios.create({
 });
 
 /**
- * Fetch a single FHIR resource from OpenMRS by type + id.
- * Used when the mediator only receives an id/reference and needs the full
- * ServiceRequest (e.g. to read the imaging modality, ordering provider, patient).
+ * Fetch a single FHIR resource from OpenMRS by type + id. Not used to relay orders, which arrive
+ * with everything they need (see getOrderBundle); used by updateServiceRequestStatus.
  */
 async function getResource(resourceType, id) {
   const { data } = await client.get(`/${resourceType}/${id}`);
   return data;
-}
-
-/**
- * Look up the OpenMRS Patient resource so we can carry the right patient
- * identifier (not just the internal UUID) over to AdvaPACS.
- */
-async function getPatient(patientId) {
-  return getResource('Patient', patientId);
 }
 
 // TODO: not yet tested
@@ -115,7 +106,6 @@ async function getOrderBundle(serviceRequestId) {
 
 module.exports = {
   getResource,
-  getPatient,
   createResource,
   updateServiceRequestStatus,
   searchServiceRequests,
