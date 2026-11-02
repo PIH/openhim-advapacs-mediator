@@ -1,16 +1,11 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
-jest.mock('../../src/lib/openmrsClient');
 jest.mock('../../src/lib/advapacsClient');
 
+const { readOrder } = require('../../src/lib/orderBundle');
+
 describe('siteLocation', () => {
-  let openmrs;
   let advapacs;
   let siteLocation;
-
-  const visitLocationTag = {
-    system: 'http://fhir.openmrs.org/ext/location-tag',
-    code: 'Visit Location'
-  };
 
   const serviceRequest = {
     resourceType: 'ServiceRequest',
@@ -18,25 +13,19 @@ describe('siteLocation', () => {
     encounter: { reference: 'Encounter/enc1', type: 'Encounter' }
   };
 
+  // The order's own encounter, at a ward; its partOf is the Visit
   const encounter = {
     resourceType: 'Encounter',
     id: 'enc1',
-    location: [{ location: { reference: 'Location/ward1', display: 'Motebang HDU' } }]
+    location: [{ location: { reference: 'Location/ward1', display: 'Motebang HDU' } }],
+    partOf: { reference: 'Encounter/visit1', type: 'Encounter' }
   };
 
-  const ward = {
-    resourceType: 'Location',
-    id: 'ward1',
-    name: 'Motebang HDU',
-    meta: { tag: [{ system: 'http://fhir.openmrs.org/ext/location-tag', code: 'Login Location' }] },
-    partOf: { reference: 'Location/vl-mote', display: 'Motebang' }
-  };
-
-  const motebang = {
-    resourceType: 'Location',
-    id: 'vl-mote',
-    name: 'Motebang',
-    meta: { tag: [visitLocationTag] }
+  // FHIR2 represents the Visit as an Encounter; its location is the Visit Location
+  const visit = {
+    resourceType: 'Encounter',
+    id: 'visit1',
+    location: [{ location: { reference: 'Location/vl-mote', display: 'Motebang' } }]
   };
 
   const organization = { resourceType: 'Organization', id: 'org1' };
@@ -47,14 +36,9 @@ describe('siteLocation', () => {
     managingOrganization: { reference: 'Organization/org1' }
   };
 
-  // Answers openmrs.getResource from a list of resources, keyed by type/id
-  function openmrsServes(...resources) {
-    openmrs.getResource.mockImplementation(async (resourceType, id) => {
-      const resource = resources.find((r) => r.resourceType === resourceType && r.id === id);
-      if (!resource) throw new Error(`Request failed with status code 404 (${resourceType}/${id})`);
-      return resource;
-    });
-  }
+  // An order read from a Bundle of the given resources
+  const orderOf = (...resources) => readOrder({ resourceType: 'Bundle', entry: resources.map((resource) => ({ resource })) });
+  const order = orderOf(serviceRequest, encounter, visit);
 
   function requireWith({ siteMap, organization: organizationCode }) {
     jest.resetModules();
@@ -63,7 +47,6 @@ describe('siteLocation', () => {
     if (organizationCode === undefined) delete process.env.ADVAPACS_ORGANIZATION;
     else process.env.ADVAPACS_ORGANIZATION = organizationCode;
 
-    openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
     siteLocation = require('../../src/lib/siteLocation');
   }
@@ -71,7 +54,6 @@ describe('siteLocation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     requireWith({ siteMap: 'vl-bots=LS-DM-BOTS,vl-mote=LS-DM-MOTE', organization: 'LS-DM' });
-    openmrsServes(encounter, ward, motebang);
     advapacs.searchOrganizations.mockResolvedValue([organization]);
     advapacs.searchLocations.mockResolvedValue([moteSite]);
   });
@@ -107,75 +89,62 @@ describe('siteLocation', () => {
         .toThrow(/ADVAPACS_ORGANIZATION is set but ADVAPACS_SITE_MAP is not/);
     });
 
-    test('resolves no location, and looks nothing up, when ADVAPACS_SITE_MAP is not set', async () => {
+    test('resolves no location, without looking at the order, when ADVAPACS_SITE_MAP is not set', async () => {
       requireWith({});
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).resolves.toBeUndefined();
-      expect(openmrs.getResource).not.toHaveBeenCalled();
+      // an order with no encounter at all would otherwise throw
+      await expect(siteLocation.resolveSiteLocationReference(orderOf({ resourceType: 'ServiceRequest', id: 'sr1' })))
+        .resolves.toBeUndefined();
       expect(advapacs.searchLocations).not.toHaveBeenCalled();
     });
   });
 
-  describe('finding the Visit Location in OpenMRS', () => {
-    test('walks from the encounter location up to the Visit Location, and resolves its mapped Site', async () => {
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+  describe('finding the Visit Location from the order Bundle', () => {
+    test('resolves the Site mapped to the Visit\'s location', async () => {
+      const result = await siteLocation.resolveSiteLocationReference(order);
 
       expect(result).toEqual([{ reference: 'Location/site-mote' }]);
-      expect(openmrs.getResource).toHaveBeenCalledWith('Encounter', 'enc1');
-      expect(openmrs.getResource).toHaveBeenCalledWith('Location', 'ward1');
-      expect(openmrs.getResource).toHaveBeenCalledWith('Location', 'vl-mote');
       expect(advapacs.searchOrganizations).toHaveBeenCalledWith('LS-DM');
       expect(advapacs.searchLocations).toHaveBeenCalledWith('LS-DM-MOTE', 'org1');
-    });
-
-    test('uses the encounter location itself when it is the Visit Location', async () => {
-      openmrsServes({ ...encounter, location: [{ location: { reference: 'Location/vl-mote' } }] }, motebang);
-
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
-
-      expect(result).toEqual([{ reference: 'Location/site-mote' }]);
-      expect(openmrs.getResource).toHaveBeenCalledTimes(2);
     });
 
     test('throws when the ServiceRequest has no encounter', async () => {
       const { encounter: _, ...withoutEncounter } = serviceRequest;
 
-      await expect(siteLocation.resolveSiteLocationReference(withoutEncounter)).rejects.toThrow(/encounter/i);
+      const relay = siteLocation.resolveSiteLocationReference(orderOf(withoutEncounter, encounter, visit));
+
+      await expect(relay).rejects.toThrow(/has no encounter/);
+      await expect(relay).rejects.toThrow(/sr1/);
     });
 
-    test('throws when the encounter has no location', async () => {
-      openmrsServes({ ...encounter, location: undefined });
-
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/enc1/);
+    test('throws when the encounter is not in the Bundle', async () => {
+      await expect(siteLocation.resolveSiteLocationReference(orderOf(serviceRequest, visit))).rejects.toThrow(/enc1/);
     });
 
-    test('throws when no location up the chain is a Visit Location', async () => {
-      openmrsServes(encounter, { ...ward, partOf: undefined });
+    test('throws when the encounter has no Visit', async () => {
+      const { partOf: _, ...withoutVisit } = encounter;
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/Visit Location/);
+      const relay = siteLocation.resolveSiteLocationReference(orderOf(serviceRequest, withoutVisit));
+
+      await expect(relay).rejects.toThrow(/no Visit/);
+      await expect(relay).rejects.toThrow(/enc1/);
     });
 
-    test('throws, rather than walking forever, when the parent chain is too deep (e.g. a cycle)', async () => {
-      openmrs.getResource.mockImplementation(async (resourceType, id) => (resourceType === 'Encounter'
-        ? encounter
-        : { resourceType: 'Location', id, partOf: { reference: `Location/${id}-parent` } }));
-
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/Visit Location/);
-      expect(openmrs.getResource.mock.calls.filter(([type]) => type === 'Location')).toHaveLength(10);
+    test('throws when the Visit is not in the Bundle', async () => {
+      await expect(siteLocation.resolveSiteLocationReference(orderOf(serviceRequest, encounter))).rejects.toThrow(/visit1/);
     });
 
-    test('lets an OpenMRS read failure propagate, without looking up the Site', async () => {
-      openmrs.getResource.mockRejectedValue(new Error('Request failed with status code 503'));
+    test('throws when the Visit has no location', async () => {
+      const { location: _, ...withoutLocation } = visit;
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow('Request failed with status code 503');
-      expect(advapacs.searchLocations).not.toHaveBeenCalled();
+      await expect(siteLocation.resolveSiteLocationReference(orderOf(serviceRequest, encounter, withoutLocation)))
+        .rejects.toThrow(/visit1/);
     });
 
     test('throws, naming the Visit Location, when it is not in ADVAPACS_SITE_MAP', async () => {
-      openmrsServes(encounter, { ...ward, partOf: { reference: 'Location/vl-other' } },
-        { resourceType: 'Location', id: 'vl-other', name: 'Ntsekhe', meta: { tag: [visitLocationTag] } });
+      const elsewhere = { ...visit, location: [{ location: { reference: 'Location/vl-other', display: 'Ntsekhe' } }] };
 
-      const relay = siteLocation.resolveSiteLocationReference(serviceRequest);
+      const relay = siteLocation.resolveSiteLocationReference(orderOf(serviceRequest, encounter, elsewhere));
 
       await expect(relay).rejects.toThrow(/vl-other/);
       await expect(relay).rejects.toThrow(/not in ADVAPACS_SITE_MAP/);
@@ -186,10 +155,9 @@ describe('siteLocation', () => {
   describe('resolving the Site in AdvaPACS', () => {
     test('looks the Site up by identifier alone, unfiltered, when ADVAPACS_ORGANIZATION is not set', async () => {
       requireWith({ siteMap: 'vl-mote=LS-DM-MOTE' });
-      openmrsServes(encounter, ward, motebang);
       advapacs.searchLocations.mockResolvedValue([{ resourceType: 'Location', id: 'site-mote' }]);
 
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+      const result = await siteLocation.resolveSiteLocationReference(order);
 
       expect(result).toEqual([{ reference: 'Location/site-mote' }]);
       expect(advapacs.searchOrganizations).not.toHaveBeenCalled();
@@ -199,14 +167,14 @@ describe('siteLocation', () => {
     test('throws when ADVAPACS_ORGANIZATION does not match an AdvaPACS Organisation', async () => {
       advapacs.searchOrganizations.mockResolvedValue([]);
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/LS-DM/);
+      await expect(siteLocation.resolveSiteLocationReference(order)).rejects.toThrow(/LS-DM/);
       expect(advapacs.searchLocations).not.toHaveBeenCalled();
     });
 
     test('throws when the Site code matches no AdvaPACS Site', async () => {
       advapacs.searchLocations.mockResolvedValue([]);
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/LS-DM-MOTE.*not found/);
+      await expect(siteLocation.resolveSiteLocationReference(order)).rejects.toThrow(/LS-DM-MOTE.*not found/);
     });
 
     test('ignores a Site from another Organisation, in case AdvaPACS ignores the organization search parameter', async () => {
@@ -214,7 +182,7 @@ describe('siteLocation', () => {
         { ...moteSite, managingOrganization: { reference: 'Organization/other-org' } }
       ]);
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/not found/);
+      await expect(siteLocation.resolveSiteLocationReference(order)).rejects.toThrow(/not found/);
     });
 
     test('matches the Site\'s Organisation by id, also when managingOrganization is an absolute reference', async () => {
@@ -222,7 +190,7 @@ describe('siteLocation', () => {
         { ...moteSite, managingOrganization: { reference: 'https://advapacs.example.com/fhir/R5/Organization/org1' } }
       ]);
 
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+      const result = await siteLocation.resolveSiteLocationReference(order);
 
       expect(result).toEqual([{ reference: 'Location/site-mote' }]);
     });
@@ -230,12 +198,12 @@ describe('siteLocation', () => {
     test('throws when the Site code matches more than one AdvaPACS Site', async () => {
       advapacs.searchLocations.mockResolvedValue([moteSite, { ...moteSite, id: 'site-mote-2' }]);
 
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/more than one/);
+      await expect(siteLocation.resolveSiteLocationReference(order)).rejects.toThrow(/more than one/);
     });
 
     test('remembers a resolved Site, so the next order for it makes no AdvaPACS lookups', async () => {
-      await siteLocation.resolveSiteLocationReference(serviceRequest);
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+      await siteLocation.resolveSiteLocationReference(order);
+      const result = await siteLocation.resolveSiteLocationReference(order);
 
       expect(result).toEqual([{ reference: 'Location/site-mote' }]);
       expect(advapacs.searchOrganizations).toHaveBeenCalledTimes(1);
@@ -244,9 +212,9 @@ describe('siteLocation', () => {
 
     test('does not remember a failed lookup, so the next order picks up a fix in AdvaPACS', async () => {
       advapacs.searchLocations.mockResolvedValueOnce([]);
-      await expect(siteLocation.resolveSiteLocationReference(serviceRequest)).rejects.toThrow(/not found/);
+      await expect(siteLocation.resolveSiteLocationReference(order)).rejects.toThrow(/not found/);
 
-      const result = await siteLocation.resolveSiteLocationReference(serviceRequest);
+      const result = await siteLocation.resolveSiteLocationReference(order);
 
       expect(result).toEqual([{ reference: 'Location/site-mote' }]);
     });

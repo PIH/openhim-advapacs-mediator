@@ -1,13 +1,7 @@
-const openmrs = require('./openmrsClient');
 const advapacs = require('./advapacsClient');
 
-// An AdvaPACS Site corresponds to an OpenMRS Visit Location (the facility), identified by this
-// location tag, which OpenMRS FHIR2 sends in Location.meta.tag
-const VISIT_LOCATION_TAG_SYSTEM = 'http://fhir.openmrs.org/ext/location-tag';
-const VISIT_LOCATION_TAG_CODE = 'Visit Location';
-
-// Guards the walk up Location.partOf against a cycle in the OpenMRS location hierarchy
-const MAX_LOCATION_DEPTH = 10;
+// An AdvaPACS Site corresponds to an OpenMRS Visit Location (the facility): the location of the Visit
+// the order was placed in
 
 /**
  * Parses ADVAPACS_SITE_MAP, "<visit-location-uuid>=<site-code>,...", into a Map. Returns null when
@@ -45,55 +39,60 @@ let organizationId;
 const siteIds = new Map();
 
 /**
- * Works out the AdvaPACS Site for the order: the OpenMRS Visit Location it was placed under
- * (found through its encounter, as FHIR2 doesn't set ServiceRequest.locationReference), mapped
- * to a Site code by ADVAPACS_SITE_MAP, and resolved to the Site's AdvaPACS Location id. Returns
+ * Works out the AdvaPACS Site for an order read from its order Bundle (see orderBundle.js): the
+ * location of the Visit it was placed in, found through its encounter (FHIR2 represents the Visit as
+ * an Encounter, referenced from Encounter.partOf, and doesn't set ServiceRequest.locationReference),
+ * mapped to a Site code by ADVAPACS_SITE_MAP, and resolved to the Site's AdvaPACS Location id. Returns
  * the outbound locationReference, or undefined when ADVAPACS_SITE_MAP isn't set.
  *
  * There's deliberately no fallback Site: if the Site can't be determined, for whatever reason
- * (missing data, an unmapped Visit Location, an OpenMRS or AdvaPACS error), this throws, so the
- * order is held as a failed OpenHIM transaction that can be re-run once fixed, rather than being
- * filed under the wrong facility.
+ * (missing data, an unmapped Visit Location, an AdvaPACS error), this throws, so the order is held as
+ * a failed OpenHIM transaction that can be re-run once fixed, rather than being filed under the wrong
+ * facility.
  */
-async function resolveSiteLocationReference(serviceRequest) {
+async function resolveSiteLocationReference(order) {
   if (!SITE_MAP) return undefined;
 
-  const visitLocation = await findVisitLocation(serviceRequest);
+  const { serviceRequest } = order;
+  const visitLocation = findVisitLocation(order);
 
-  const siteCode = SITE_MAP.get(visitLocation.id);
+  const siteCode = SITE_MAP.get(idOf(visitLocation));
   if (!siteCode) {
-    throw new Error(`Visit Location ${visitLocation.id} (${visitLocation.name}) of ServiceRequest ${serviceRequest.id} ` +
-      'is not in ADVAPACS_SITE_MAP');
+    throw new Error(`Visit Location ${idOf(visitLocation)} (${visitLocation.display}) of ServiceRequest ` +
+      `${serviceRequest.id} is not in ADVAPACS_SITE_MAP`);
   }
 
   return [{ reference: `Location/${await resolveSiteId(siteCode)}` }];
 }
 
-async function findVisitLocation(serviceRequest) {
+// The order's Visit Location, as the reference on its Visit: ServiceRequest.encounter -> that
+// Encounter's partOf (the Visit) -> the Visit's location
+function findVisitLocation({ serviceRequest, find }) {
   const encounterId = idOf(serviceRequest.encounter);
   if (!encounterId) {
     throw new Error(`ServiceRequest ${serviceRequest.id} has no encounter to find its Visit Location from`);
   }
 
-  const encounter = await openmrs.getResource('Encounter', encounterId);
-  let locationId = idOf(encounter.location && encounter.location[0] && encounter.location[0].location);
-  if (!locationId) {
-    throw new Error(`Encounter ${encounterId} of ServiceRequest ${serviceRequest.id} has no location`);
+  const encounter = find(serviceRequest.encounter);
+  if (!encounter) {
+    throw new Error(`Encounter ${encounterId} of ServiceRequest ${serviceRequest.id} is not in its order Bundle`);
   }
 
-  for (let depth = 0; depth < MAX_LOCATION_DEPTH && locationId; depth++) {
-    const location = await openmrs.getResource('Location', locationId);
-    if (isVisitLocation(location)) return location;
-    locationId = idOf(location.partOf);
+  const visitId = idOf(encounter.partOf);
+  if (!visitId) {
+    throw new Error(`Encounter ${encounterId} of ServiceRequest ${serviceRequest.id} has no Visit`);
   }
-  throw new Error(`No Visit Location found above the location of Encounter ${encounterId} ` +
-    `(ServiceRequest ${serviceRequest.id})`);
-}
 
-function isVisitLocation(location) {
-  return ((location.meta && location.meta.tag) || []).some(
-    (tag) => tag.system === VISIT_LOCATION_TAG_SYSTEM && tag.code === VISIT_LOCATION_TAG_CODE
-  );
+  const visit = find(encounter.partOf);
+  if (!visit) {
+    throw new Error(`Visit ${visitId} of ServiceRequest ${serviceRequest.id} is not in its order Bundle`);
+  }
+
+  const visitLocation = visit.location && visit.location[0] && visit.location[0].location;
+  if (!idOf(visitLocation)) {
+    throw new Error(`Visit ${visitId} of ServiceRequest ${serviceRequest.id} has no location`);
+  }
+  return visitLocation;
 }
 
 async function resolveSiteId(siteCode) {
