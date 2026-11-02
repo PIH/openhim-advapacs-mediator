@@ -130,6 +130,28 @@ describe('openmrsClient', () => {
       .rejects.toThrow('page 2 failed');
   });
 
+  test('searchServiceRequests rejects, rather than looping forever, when a next link repeats', async () => {
+    const page = {
+      resourceType: 'Bundle',
+      entry: [],
+      link: [{ relation: 'next', url: 'http://x/ws/fhir2/R4?_getpages=abc&_getpagesoffset=10' }]
+    };
+    mockClient.get.mockResolvedValue({ data: page });
+
+    await expect(openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-11-02T00:00:00.000Z' }))
+      .rejects.toThrow(/next link repeats/);
+    expect(mockClient.get).toHaveBeenCalledTimes(2);
+  });
+
+  test('searchServiceRequests rejects a next link with no query, rather than skipping the remaining pages', async () => {
+    mockClient.get.mockResolvedValueOnce({
+      data: { resourceType: 'Bundle', entry: [], link: [{ relation: 'next', url: 'http://x/ws/fhir2/R4' }] }
+    });
+
+    await expect(openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-11-02T00:00:00.000Z' }))
+      .rejects.toThrow(/next link has no query/);
+  });
+
   test('getOrderBundle searches by _id with the order includes', async () => {
     const bundle = { resourceType: 'Bundle', entry: [{ resource: { resourceType: 'ServiceRequest', id: 'sr1' } }] };
     mockClient.get.mockResolvedValue({ data: bundle });

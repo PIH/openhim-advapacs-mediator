@@ -18,7 +18,14 @@ function splitOrders(searchBundle) {
   });
   const find = (reference) => byKey.get(referenceKey(reference));
 
-  return resources.filter((resource) => resource.resourceType === 'ServiceRequest').map((serviceRequest) => {
+  // Each order once, even if it's on two pages: FHIR2 may re-run the search for each page, so an order
+  // updated during the poll can shift onto the next one, and posting it twice would create it twice in AdvaPACS
+  const serviceRequests = new Map();
+  resources.filter((resource) => resource.resourceType === 'ServiceRequest').forEach((serviceRequest) => {
+    if (!serviceRequests.has(serviceRequest.id)) serviceRequests.set(serviceRequest.id, serviceRequest);
+  });
+
+  return [...serviceRequests.values()].map((serviceRequest) => {
     const encounter = find(serviceRequest.encounter);
     const referenced = [
       find(serviceRequest.subject),

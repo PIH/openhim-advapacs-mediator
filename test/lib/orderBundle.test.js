@@ -65,6 +65,16 @@ describe('orderBundle', () => {
       expect(idsIn(result[0])).toEqual(['ServiceRequest/sr1', 'Patient/p1', 'Encounter/e1']);
     });
 
+    test('gives an order that appears on two pages only one Bundle', () => {
+      // FHIR2 may re-run the search for each page, so an order updated mid-poll can shift onto the next page
+      const result = splitOrders(searchBundle(
+        order('sr1', { patient: 'p1' }), patient('p1'), order('sr1', { patient: 'p1' }), patient('p1')
+      ));
+
+      expect(result).toHaveLength(1);
+      expect(idsIn(result[0])).toEqual(['ServiceRequest/sr1', 'Patient/p1']);
+    });
+
     test('returns [] for a Bundle with no entry', () => {
       expect(splitOrders({ resourceType: 'Bundle', type: 'searchset' })).toEqual([]);
     });

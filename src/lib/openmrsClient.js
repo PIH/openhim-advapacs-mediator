@@ -78,7 +78,11 @@ async function searchServiceRequests({ status, lastUpdatedAfter } = {}) {
   let { data: page } = await client.get('/ServiceRequest', { params: orderSearchParams(params) });
   const entry = [...(page.entry || [])];
 
+  // A next link that repeats would page forever; rejecting leaves the poller's cursor where it was
+  const seen = new Set();
   for (let next = nextPageQuery(page); next; next = nextPageQuery(page)) {
+    if (seen.has(next)) throw new Error(`ServiceRequest search's next link repeats (${next})`);
+    seen.add(next);
     ({ data: page } = await client.get(`?${next}`));
     entry.push(...(page.entry || []));
   }
@@ -91,8 +95,11 @@ async function searchServiceRequests({ status, lastUpdatedAfter } = {}) {
 // reach, and a paging link addresses the FHIR base rather than /ServiceRequest
 function nextPageQuery(bundle) {
   const next = (bundle.link || []).find((link) => link.relation === 'next');
-  const queryStart = next && next.url ? next.url.indexOf('?') : -1;
-  return queryStart >= 0 ? next.url.slice(queryStart + 1) : undefined;
+  if (!next) return undefined;
+  // Rejected rather than treated as the last page, which would skip the remaining pages' orders
+  const queryStart = next.url ? next.url.indexOf('?') : -1;
+  if (queryStart < 0) throw new Error(`ServiceRequest search's next link has no query (${next.url})`);
+  return next.url.slice(queryStart + 1);
 }
 
 /**
