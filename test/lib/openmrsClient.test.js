@@ -73,14 +73,27 @@ describe('openmrsClient', () => {
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'sr1', status: 'completed' });
   });
 
-  test('searchServiceRequests builds _lastUpdated param when lastUpdatedAfter given', async () => {
+  // The serialised query of a client.get call's params (a URLSearchParams), decoded for readability
+  const queryOf = (call) => decodeURIComponent(call[1].params.toString());
+
+  const ORDER_INCLUDES_QUERY = [
+    '_include=ServiceRequest:patient',
+    '_include=ServiceRequest:requester',
+    '_include=ServiceRequest:encounter',
+    '_include:iterate=Encounter:part-of'
+  ];
+
+  test('searchServiceRequests sends the order includes and _lastUpdated', async () => {
     mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', entry: [] } });
 
-    await openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-08-05T00:00:00.000Z' });
+    await openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-11-02T00:00:00.000Z' });
 
-    expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', {
-      params: { _lastUpdated: 'gt2026-08-05T00:00:00.000Z' }
-    });
+    expect(mockClient.get).toHaveBeenCalledTimes(1);
+    expect(mockClient.get.mock.calls[0][0]).toBe('/ServiceRequest');
+    const query = queryOf(mockClient.get.mock.calls[0]);
+    expect(query).toContain('_lastUpdated=gt2026-11-02T00:00:00.000Z');
+    ORDER_INCLUDES_QUERY.forEach((include) => expect(query.split('&')).toContain(include));
+    expect(query).not.toContain('_include[]');
   });
 
   test('searchServiceRequests builds status param when given', async () => {
@@ -88,14 +101,54 @@ describe('openmrsClient', () => {
 
     await openmrs.searchServiceRequests({ status: 'active' });
 
-    expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', { params: { status: 'active' } });
+    expect(queryOf(mockClient.get.mock.calls[0]).split('&')).toContain('status=active');
   });
 
-  test('searchServiceRequests builds no params when neither status nor lastUpdatedAfter given', async () => {
-    mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', entry: [] } });
+  test('searchServiceRequests follows next links and concatenates entries', async () => {
+    const a = { resource: { resourceType: 'ServiceRequest', id: 'a' } };
+    const b = { resource: { resourceType: 'ServiceRequest', id: 'b' } };
+    mockClient.get
+      .mockResolvedValueOnce({
+        data: {
+          resourceType: 'Bundle',
+          entry: [a],
+          link: [
+            { relation: 'self', url: 'https://public.example.org/openmrs/ws/fhir2/R4/ServiceRequest' },
+            { relation: 'next', url: 'https://public.example.org/openmrs/ws/fhir2/R4?_getpages=abc&_getpagesoffset=10' }
+          ]
+        }
+      })
+      .mockResolvedValueOnce({ data: { resourceType: 'Bundle', entry: [b] } });
 
-    await openmrs.searchServiceRequests();
+    const result = await openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-11-02T00:00:00.000Z' });
 
-    expect(mockClient.get).toHaveBeenCalledWith('/ServiceRequest', { params: {} });
+    expect(result.entry).toEqual([a, b]);
+    expect(mockClient.get).toHaveBeenCalledTimes(2);
+    // only the link's query is used, against the configured OpenMRS base URL, never the link's own host
+    expect(mockClient.get.mock.calls[1]).toEqual(['?_getpages=abc&_getpagesoffset=10']);
+  });
+
+  test('searchServiceRequests rejects when a later page fails', async () => {
+    mockClient.get
+      .mockResolvedValueOnce({
+        data: { resourceType: 'Bundle', entry: [], link: [{ relation: 'next', url: 'http://x/ws/fhir2/R4?_getpages=abc' }] }
+      })
+      .mockRejectedValueOnce(new Error('page 2 failed'));
+
+    await expect(openmrs.searchServiceRequests({ lastUpdatedAfter: '2026-11-02T00:00:00.000Z' }))
+      .rejects.toThrow('page 2 failed');
+  });
+
+  test('getOrderBundle searches by _id with the order includes', async () => {
+    const bundle = { resourceType: 'Bundle', entry: [{ resource: { resourceType: 'ServiceRequest', id: 'sr1' } }] };
+    mockClient.get.mockResolvedValue({ data: bundle });
+
+    const result = await openmrs.getOrderBundle('sr1');
+
+    expect(mockClient.get.mock.calls[0][0]).toBe('/ServiceRequest');
+    const query = queryOf(mockClient.get.mock.calls[0]).split('&');
+    expect(query).toContain('_id=sr1');
+    ORDER_INCLUDES_QUERY.forEach((include) => expect(query).toContain(include));
+    expect(result).toEqual(bundle);
   });
 });
