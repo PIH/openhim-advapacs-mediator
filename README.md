@@ -13,9 +13,15 @@ orders and results between them as FHIR resources.
      via OpenHIM's "OpenMRS to Mediator Order Push" inbound channel.
    - **`poll`** (default): `src/lib/orderPoller.js` periodically searches OpenMRS's FHIR
      `ServiceRequest` endpoint for anything new since the last poll, then POSTs
-     each one to that same OpenHIM inbound channel.
+     each one to that same OpenHIM inbound channel. The search includes each
+     order's `Patient`, ordering `Practitioner`, `Encounter` and, through
+     `Encounter.partOf`, its Visit, so a poll is one OpenMRS request per page of
+     results and relaying an order makes no further OpenMRS calls. Each order is
+     POSTed as an order Bundle of those resources (`src/lib/orderBundle.js`).
+     **This needs an OpenMRS whose FHIR2 module has FM2-708**
+     (`_include:iterate=Encounter:part-of`); an older one rejects the search.
 3. Either way, `routes/serviceRequest.js` hands off to `src/lib/orderRelay.js`,
-   which resolves the OpenMRS `Patient` and, before touching the
+   which reads the OpenMRS `Patient` from the order Bundle and, before touching the
    `ServiceRequest` at all, pushes/updates that `Patient` in AdvaPACS first
    (`advapacsClient.js`'s `upsertPatient` — searches by identifier, then
    `PUT`s if AdvaPACS already has that patient or `POST`s to create) — if
@@ -49,13 +55,22 @@ orders and results between them as FHIR resources.
 orderPoller.js (every ORDER_POLL_INTERVAL_MS)
   --HTTP POST--> OpenHIM inbound channel  ^/fhir/ServiceRequest$
     --routes to--> mediator's POST /fhir/ServiceRequest (routes/serviceRequest.js)
-      --calls--> orderRelay.js (resolve patient, reshape ServiceRequest for AdvaPACS)
+      --calls--> orderRelay.js (read the order Bundle, reshape ServiceRequest for AdvaPACS)
         --calls--> advapacsClient.js upsertPatient()          [1: Patient, first]
           --HTTP GET/POST/PUT--> OpenHIM outbound channel  ^/advapacs/.*$  (auto-retry enabled)
         --calls--> advapacsClient.js createServiceRequest()   [2: ServiceRequest, only if #1 succeeded]
           --HTTP POST--> OpenHIM outbound channel  ^/advapacs/.*$  (auto-retry enabled)
             --pathTransform strips /advapacs, routes to--> real AdvaPACS host
 ```
+
+## Upgrading to the single-request poll
+
+From this version the mediator needs FHIR2 with FM2-708 (see Flow), and its
+inbound endpoint accepts only an order Bundle or `{ "serviceRequestId" }`. A
+failed OpenHIM transaction from an earlier version carries a bare
+`ServiceRequest`, so re-running it fails. Before upgrading, re-run or clear any
+failed transactions that matter; afterwards, re-send any that remain as
+`{ "serviceRequestId": "<uuid>" }`.
 
 ## What's real vs. stubbed
 
@@ -73,9 +88,20 @@ they need your actual data model, not boilerplate:
   (`orderRelay.js` references the patient via AdvaPACS's own Patient id —
   see Flow), and `encounter`/`requester` (Practitioner) references are
   dropped from the outbound `ServiceRequest` entirely, since AdvaPACS can't
-  resolve OpenMRS UUIDs for either. `Location` references aren't handled at
-  all yet — confirm what AdvaPACS expects there if/when that becomes
-  relevant.
+  resolve OpenMRS UUIDs for either.
+- **AdvaPACS Site (UHM-9468)**: with AdvaPACS's Organisations & Sites
+  feature on, each order is sent with `locationReference` pointing at the
+  AdvaPACS Site for the OpenMRS Visit Location it was placed under — the
+  location of the order's Visit, which arrives in the order Bundle as the
+  `Encounter` its own encounter is `partOf` (see `siteLocation.js`).
+  `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
+  the optional `ADVAPACS_ORGANIZATION` only accepts Sites in that
+  Organisation (see `.env.example`). There's no fallback Site: an order
+  whose Site can't be determined fails, and can be re-run from OpenHIM once
+  the map is fixed (a re-run replays the order as it was polled, so a fix
+  to the OpenMRS data needs the order re-sent, e.g. as
+  `{ "serviceRequestId": "<uuid>" }`). With `ADVAPACS_SITE_MAP` unset, no
+  location is sent.
 - **Several other fields are temporarily hardcoded or reshaped** just to get
   a `ServiceRequest` past AdvaPACS's validation — accession-number
   identifier duplication (UHM-9437/9439/9440), an HL7 "PI" coding stamped
@@ -149,9 +175,13 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
 
   - **Request**: `POST /fhir/ServiceRequest` on OpenHIM's router (see port/
     scheme note below), `Content-Type: application/fhir+json`. Body is either
-    a full `ServiceRequest` FHIR resource, or the minimal
-    `{ "serviceRequestId": "<uuid>" }` form (`src/lib/orderRelay.js` fetches
-    the full resource from OpenMRS itself in that case).
+    an order Bundle (the `ServiceRequest` with its `Patient`, `Practitioner`,
+    `Encounter` and Visit, as `orderPoller.js` sends; see
+    `src/lib/orderBundle.js`), or the minimal
+    `{ "serviceRequestId": "<uuid>" }` form, for which `src/lib/orderRelay.js`
+    fetches the order Bundle from OpenMRS in one request. The id form is there
+    for exactly this kind of push module, and would likely be removed if push
+    were implemented some other way. A bare `ServiceRequest` is rejected.
   - **Required headers** (that channel is `authType: "private"`, and the
     mediator's own route checks a second, independent secret):
     - `Authorization: Basic base64(OPENHIM_INBOUND_CLIENT_ID:OPENHIM_INBOUND_CLIENT_PASSWORD)`

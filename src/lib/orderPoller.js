@@ -1,6 +1,7 @@
 const axios = require('axios');
 const logger = require('./logger');
 const openmrs = require('./openmrsClient');
+const { splitOrders } = require('./orderBundle');
 
 let lastPolledAt = null;
 let timer = null;
@@ -13,52 +14,60 @@ let timer = null;
  * any ServiceRequest created while the mediator was down is missed.
  * TODO: this will need to be improved if we want to use in Production!
  *
- * Submits each polled ServiceRequest to OpenHIM's inbound channel (same
- * urlPattern routes/serviceRequest.js's push endpoint sits behind) rather
- * than calling orderRelay.js directly, so this hop is logged/retryable as
- * an OpenHIM transaction instead of being invisible in-process.
+ * Each poll is one OpenMRS request per page of results, carrying everything
+ * the relay needs for each order (see ORDER_INCLUDES in openmrsClient.js), so
+ * relaying an order makes no further OpenMRS calls. If any page fails, nothing
+ * is submitted and the cursor stays where it was, so the next poll searches the
+ * same window again (submitting some orders twice would duplicate them in AdvaPACS).
+ *
+ * Submits each polled order, as an order Bundle (see orderBundle.js), to
+ * OpenHIM's inbound channel (same urlPattern routes/serviceRequest.js's push
+ * endpoint sits behind) rather than calling orderRelay.js directly, so this hop
+ * is logged/retryable as an OpenHIM transaction instead of being invisible
+ * in-process. A re-run replays the order as it was polled.
  */
 async function pollOnce() {
   const since = lastPolledAt;
   const polledAt = new Date().toISOString();
 
+  let orders;
   try {
-    const bundle = await openmrs.searchServiceRequests({
+    orders = splitOrders(await openmrs.searchServiceRequests({
       lastUpdatedAfter: since
-    });
-    const serviceRequests = (bundle.entry || []).map((entry) => entry.resource);
-
-    for (const serviceRequest of serviceRequests) {
-      try {
-        await axios.post(
-          `${process.env.OPENHIM_ROUTER_URL}/fhir/ServiceRequest`,
-          serviceRequest,
-          {
-            headers: {
-              'Content-Type': 'application/fhir+json',
-              'X-Mediator-Secret': process.env.MEDIATOR_INBOUND_SECRET
-            },
-            auth: {
-              username: process.env.OPENHIM_INBOUND_CLIENT_ID,
-              password: process.env.OPENHIM_INBOUND_CLIENT_PASSWORD
-            }
-          }
-        );
-      } catch (err) {
-        logger.error('Failed to submit polled ServiceRequest to OpenHIM', {
-          openmrsServiceRequestId: serviceRequest.id,
-          error: err.message
-        });
-      }
-    }
-
-    if (serviceRequests.length) {
-      logger.info(`Polled ${serviceRequests.length} ServiceRequest(s) from OpenMRS`);
-    }
+    }));
   } catch (err) {
     logger.error('OpenMRS ServiceRequest poll failed', { error: err.message });
-  } finally {
-    lastPolledAt = polledAt;
+    return;
+  }
+  lastPolledAt = polledAt;
+
+  for (const order of orders) {
+    const serviceRequest = order.entry[0].resource;
+    try {
+      await axios.post(
+        `${process.env.OPENHIM_ROUTER_URL}/fhir/ServiceRequest`,
+        order,
+        {
+          headers: {
+            'Content-Type': 'application/fhir+json',
+            'X-Mediator-Secret': process.env.MEDIATOR_INBOUND_SECRET
+          },
+          auth: {
+            username: process.env.OPENHIM_INBOUND_CLIENT_ID,
+            password: process.env.OPENHIM_INBOUND_CLIENT_PASSWORD
+          }
+        }
+      );
+    } catch (err) {
+      logger.error('Failed to submit polled ServiceRequest to OpenHIM', {
+        openmrsServiceRequestId: serviceRequest.id,
+        error: err.message
+      });
+    }
+  }
+
+  if (orders.length) {
+    logger.info(`Polled ${orders.length} ServiceRequest(s) from OpenMRS`);
   }
 }
 

@@ -27,10 +27,15 @@ describe('orderPoller', () => {
     jest.useRealTimers();
   });
 
-  test('pollOnce POSTs each entry in the search bundle to the OpenHIM inbound channel', async () => {
-    const sr1 = { resourceType: 'ServiceRequest', id: 'sr1' };
-    const sr2 = { resourceType: 'ServiceRequest', id: 'sr2' };
-    openmrs.searchServiceRequests.mockResolvedValue({ entry: [{ resource: sr1 }, { resource: sr2 }] });
+  test('pollOnce POSTs one order Bundle per ServiceRequest to the OpenHIM inbound channel', async () => {
+    const sr1 = { resourceType: 'ServiceRequest', id: 'sr1', subject: { reference: 'Patient/p1' } };
+    const sr2 = { resourceType: 'ServiceRequest', id: 'sr2', subject: { reference: 'Patient/p2' } };
+    const p1 = { resourceType: 'Patient', id: 'p1' };
+    const p2 = { resourceType: 'Patient', id: 'p2' };
+    openmrs.searchServiceRequests.mockResolvedValue({
+      resourceType: 'Bundle',
+      entry: [{ resource: sr1 }, { resource: sr2 }, { resource: p1 }, { resource: p2 }]
+    });
     axios.post.mockResolvedValue({ status: 200 });
 
     await orderPoller.pollOnce();
@@ -45,16 +50,13 @@ describe('orderPoller', () => {
         password: 'test-client-password'
       }
     };
-    expect(axios.post).toHaveBeenCalledWith(
-      'http://openhim-core:5001/fhir/ServiceRequest',
-      sr1,
-      expectedConfig
-    );
-    expect(axios.post).toHaveBeenCalledWith(
-      'http://openhim-core:5001/fhir/ServiceRequest',
-      sr2,
-      expectedConfig
-    );
+    const orderBundle = (...resources) => ({
+      resourceType: 'Bundle',
+      type: 'collection',
+      entry: resources.map((resource) => ({ resource }))
+    });
+    expect(axios.post).toHaveBeenCalledWith('http://openhim-core:5001/fhir/ServiceRequest', orderBundle(sr1, p1), expectedConfig);
+    expect(axios.post).toHaveBeenCalledWith('http://openhim-core:5001/fhir/ServiceRequest', orderBundle(sr2, p2), expectedConfig);
     expect(axios.post).toHaveBeenCalledTimes(2);
   });
 
@@ -92,15 +94,60 @@ describe('orderPoller', () => {
     });
   });
 
-  test('the cursor still advances even when the OpenMRS search itself throws', async () => {
+  test('pollOnce posts nothing, and keeps the cursor, when the search fails (e.g. on a later page)', async () => {
+    const sr1 = { resourceType: 'ServiceRequest', id: 'sr1' };
     jest.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [] });
+    await orderPoller.pollOnce();
+
+    jest.setSystemTime(new Date('2026-08-05T12:00:15.000Z'));
     openmrs.searchServiceRequests.mockRejectedValueOnce(new Error('OpenMRS unreachable'));
+    await orderPoller.pollOnce();
+
+    jest.setSystemTime(new Date('2026-08-05T12:00:30.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [{ resource: sr1 }] });
+    axios.post.mockResolvedValue({ status: 200 });
+    await orderPoller.pollOnce();
+
+    // the failed poll's window is searched again, from the last successful poll
+    expect(openmrs.searchServiceRequests).toHaveBeenNthCalledWith(3, {
+      lastUpdatedAfter: '2026-08-05T12:00:00.000Z'
+    });
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
+  test('pollOnce advances the cursor even when posting one order fails', async () => {
+    const sr1 = { resourceType: 'ServiceRequest', id: 'sr1' };
+    const sr2 = { resourceType: 'ServiceRequest', id: 'sr2' };
+    jest.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [{ resource: sr1 }, { resource: sr2 }] });
+    axios.post
+      .mockRejectedValueOnce(new Error('502 from OpenHIM'))
+      .mockResolvedValueOnce({ status: 200 });
     await orderPoller.pollOnce();
 
     jest.setSystemTime(new Date('2026-08-05T12:00:15.000Z'));
     openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [] });
     await orderPoller.pollOnce();
 
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(openmrs.searchServiceRequests).toHaveBeenNthCalledWith(2, {
+      lastUpdatedAfter: '2026-08-05T12:00:00.000Z'
+    });
+  });
+
+  test('pollOnce with no matches posts nothing, advances the cursor and logs no error', async () => {
+    const logger = require('../../src/lib/logger');
+    jest.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ resourceType: 'Bundle', type: 'searchset' });
+    await orderPoller.pollOnce();
+
+    jest.setSystemTime(new Date('2026-08-05T12:00:15.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ resourceType: 'Bundle', type: 'searchset' });
+    await orderPoller.pollOnce();
+
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
     expect(openmrs.searchServiceRequests).toHaveBeenNthCalledWith(2, {
       lastUpdatedAfter: '2026-08-05T12:00:00.000Z'
     });

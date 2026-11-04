@@ -1,11 +1,14 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../src/lib/openmrsClient');
 jest.mock('../../src/lib/advapacsClient');
+jest.mock('../../src/lib/siteLocation');
 
 describe('orderRelay', () => {
   let openmrs;
   let advapacs;
+  let siteLocation;
   let orderRelay;
+  let logger;
 
   const patientWithEmrId = {
     resourceType: 'Patient',
@@ -38,41 +41,78 @@ describe('orderRelay', () => {
     value: 'INTERNAL-1'
   };
 
+  // The resources in the order Bundle each test relays, beside its ServiceRequest. A later addition of
+  // the same resource replaces an earlier one, as readOrder keeps the last
+  let bundled;
+  const inBundle = (...resources) => bundled.push(...resources);
+  const orderBundle = (serviceRequest, ...resources) => ({
+    resourceType: 'Bundle',
+    type: 'collection',
+    entry: [serviceRequest, ...resources].filter(Boolean).map((resource) => ({ resource }))
+  });
+  // Relays the ServiceRequest in an order Bundle with the resources added by inBundle
+  const relay = (serviceRequest) => orderRelay.relayServiceRequest(orderBundle(serviceRequest, ...bundled));
+
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
+    bundled = [];
 
     process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
     process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/provider-uuid';
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
+    siteLocation = require('../../src/lib/siteLocation');
     orderRelay = require('../../src/lib/orderRelay');
+    logger = require('../../src/lib/logger');
   });
 
-  test('uses the input directly when it is already a full ServiceRequest', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
-    advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
-    advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+  describe('inputs: an order Bundle, or a serviceRequestId', () => {
+    beforeEach(() => {
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
 
-    await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+    test('makes no OpenMRS calls for an order Bundle', async () => {
+      inBundle(patientWithEmrId);
 
-    expect(openmrs.getResource).not.toHaveBeenCalled();
-  });
+      await relay(serviceRequestWithSubject);
 
-  test('resolves the full ServiceRequest when given only a serviceRequestId', async () => {
-    openmrs.getResource.mockResolvedValue(serviceRequestWithSubject);
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
-    advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
-    advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+      expect(openmrs.getResource).not.toHaveBeenCalled();
+      expect(openmrs.getOrderBundle).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).toHaveBeenCalledTimes(1);
+    });
 
-    await orderRelay.relayServiceRequest({ serviceRequestId: 'sr1' });
+    test('relays a { serviceRequestId } by fetching its order Bundle', async () => {
+      openmrs.getOrderBundle.mockResolvedValue(orderBundle(serviceRequestWithSubject, patientWithEmrId));
 
-    expect(openmrs.getResource).toHaveBeenCalledWith('ServiceRequest', 'sr1');
+      await orderRelay.relayServiceRequest({ serviceRequestId: 'sr1' });
+
+      expect(openmrs.getOrderBundle).toHaveBeenCalledTimes(1);
+      expect(openmrs.getOrderBundle).toHaveBeenCalledWith('sr1');
+      expect(openmrs.getResource).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects a bare ServiceRequest, and sends nothing to AdvaPACS', async () => {
+      await expect(orderRelay.relayServiceRequest(serviceRequestWithSubject))
+        .rejects.toThrow('Expected an order Bundle or { serviceRequestId }');
+
+      expect(advapacs.upsertPatient).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+    });
+
+    test('rejects an order Bundle without exactly one ServiceRequest', async () => {
+      await expect(orderRelay.relayServiceRequest(orderBundle(undefined, patientWithEmrId)))
+        .rejects.toThrow('Order Bundle must contain exactly one ServiceRequest, found 0');
+
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+    });
   });
 
   test('pushes the Patient to AdvaPACS before the ServiceRequest', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    inBundle(patientWithEmrId);
     const callOrder = [];
     advapacs.upsertPatient.mockImplementation(async () => {
       callOrder.push('patient');
@@ -83,17 +123,17 @@ describe('orderRelay', () => {
       return { id: 'advapacs-sr-1' };
     });
 
-    await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+    await relay(serviceRequestWithSubject);
 
     expect(callOrder).toEqual(['patient', 'serviceRequest']);
   });
 
   test('references the patient on the outbound ServiceRequest by the AdvaPACS-assigned Patient id, not the OpenMRS UUID', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    inBundle(patientWithEmrId);
     advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
     advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-    await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+    await relay(serviceRequestWithSubject);
 
     expect(advapacs.createServiceRequest).toHaveBeenCalledWith(expect.objectContaining({
       subject: {
@@ -104,17 +144,59 @@ describe('orderRelay', () => {
   });
 
   test('strips the encounter field from the outbound ServiceRequest', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    inBundle(patientWithEmrId);
     advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
     advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-    await orderRelay.relayServiceRequest({
+    await relay({
       ...serviceRequestWithSubject,
       encounter: { reference: 'Encounter/omrs-encounter-uuid' }
     });
 
     const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
     expect(outboundArg).not.toHaveProperty('encounter');
+  });
+
+  describe('AdvaPACS Site (locationReference), from the order\'s Visit Location', () => {
+    beforeEach(() => {
+      inBundle(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+    });
+
+    test('sets locationReference to the AdvaPACS Site resolved for the ServiceRequest', async () => {
+      siteLocation.resolveSiteLocationReference.mockResolvedValue([{ reference: 'Location/site-mote' }]);
+
+      await relay(serviceRequestWithSubject);
+
+      expect(siteLocation.resolveSiteLocationReference).toHaveBeenCalledWith(
+        expect.objectContaining({ serviceRequest: serviceRequestWithSubject, find: expect.any(Function) })
+      );
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.locationReference).toEqual([{ reference: 'Location/site-mote' }]);
+    });
+
+    test('sends no locationReference when no Site is configured', async () => {
+      siteLocation.resolveSiteLocationReference.mockResolvedValue(undefined);
+
+      await relay(serviceRequestWithSubject);
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg).not.toHaveProperty('locationReference');
+    });
+
+    test('when the Site can\'t be determined, the error propagates and nothing is sent to AdvaPACS', async () => {
+      siteLocation.resolveSiteLocationReference.mockRejectedValue(new Error('Visit Location vl-other is not in ADVAPACS_SITE_MAP'));
+
+      await expect(relay({
+        ...serviceRequestWithSubject,
+        requester: { reference: 'Practitioner/omrs-practitioner-uuid' }
+      })).rejects.toThrow('not in ADVAPACS_SITE_MAP');
+
+      expect(advapacs.upsertPatient).not.toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+    });
   });
 
   describe('ordering clinician (requester) relayed as an AdvaPACS Practitioner', () => {
@@ -134,21 +216,36 @@ describe('orderRelay', () => {
     };
 
     beforeEach(() => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
-      openmrs.getResource.mockResolvedValue(openmrsPractitioner);
+      inBundle(patientWithEmrId);
+      inBundle(openmrsPractitioner);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.upsertPractitioner.mockResolvedValue({ id: 'advapacs-practitioner-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
-    test('fetches the requester Practitioner from OpenMRS', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+    test('reads the requester Practitioner from the order Bundle, without fetching it', async () => {
+      await relay(serviceRequestWithRequester);
 
-      expect(openmrs.getResource).toHaveBeenCalledWith('Practitioner', 'omrs-practitioner-uuid');
+      expect(openmrs.getResource).not.toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).toHaveBeenCalledWith(
+        expect.objectContaining({ name: [{ family: 'Herb', given: ['Phil'] }] }),
+        'http://www.pih.org/identifiers/lesotho/provider-uuid', 'omrs-practitioner-uuid'
+      );
+    });
+
+    test('sends no requester when the Practitioner is referenced but not in the order Bundle', async () => {
+      bundled = [patientWithEmrId];
+
+      await relay(serviceRequestWithRequester);
+
+      expect(logger.warn).toHaveBeenCalled();
+      expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(outboundArg.requester).toBeUndefined();
     });
 
     test('upserts the Practitioner into AdvaPACS, matched on its OpenMRS provider UUID under ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, sending only the fields AdvaPACS supports', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       expect(advapacs.upsertPractitioner).toHaveBeenCalledWith({
         resourceType: 'Practitioner',
@@ -159,7 +256,7 @@ describe('orderRelay', () => {
     });
 
     test('sends only the provider-UUID identifier, not OpenMRS\'s own provider identifier (AdvaPACS 422s on any unregistered identifier system)', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       const [outboundPractitionerArg] = advapacs.upsertPractitioner.mock.calls[0];
       expect(outboundPractitionerArg.identifier).toEqual([
@@ -168,9 +265,9 @@ describe('orderRelay', () => {
     });
 
     test('still matches on the provider UUID when the provider has no OpenMRS identifier', async () => {
-      openmrs.getResource.mockResolvedValue({ ...openmrsPractitioner, identifier: [] });
+      inBundle({ ...openmrsPractitioner, identifier: [] });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       expect(advapacs.upsertPractitioner).toHaveBeenCalledWith(
         expect.anything(), 'http://www.pih.org/identifiers/lesotho/provider-uuid', 'omrs-practitioner-uuid'
@@ -185,11 +282,11 @@ describe('orderRelay', () => {
       openmrs = require('../../src/lib/openmrsClient');
       advapacs = require('../../src/lib/advapacsClient');
       orderRelay = require('../../src/lib/orderRelay');
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       expect(openmrs.getResource).not.toHaveBeenCalled();
       expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
@@ -198,7 +295,7 @@ describe('orderRelay', () => {
     });
 
     test('references the requester on the outbound ServiceRequest by the AdvaPACS-assigned Practitioner id, not the OpenMRS UUID', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.requester).toEqual({
@@ -218,13 +315,13 @@ describe('orderRelay', () => {
         return { id: 'advapacs-sr-1' };
       });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       expect(callOrder).toEqual(['practitioner', 'serviceRequest']);
     });
 
     test('sends no requester, and upserts no Practitioner, when the ServiceRequest has no requester', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       expect(advapacs.upsertPractitioner).not.toHaveBeenCalled();
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
@@ -232,7 +329,7 @@ describe('orderRelay', () => {
     });
 
     test('sends no requester when the requester is not a Practitioner', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         requester: { reference: 'Organization/omrs-org-uuid' }
       });
@@ -246,7 +343,7 @@ describe('orderRelay', () => {
     test('still sends the ServiceRequest, without a requester, when the Practitioner upsert fails', async () => {
       advapacs.upsertPractitioner.mockRejectedValue(new Error('Request failed with status code 422'));
 
-      await orderRelay.relayServiceRequest(serviceRequestWithRequester);
+      await relay(serviceRequestWithRequester);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.requester).toBeUndefined();
@@ -254,20 +351,20 @@ describe('orderRelay', () => {
   });
 
   test('throws when the patient has no identifier matching ADVAPACS_PATIENT_IDENTIFIER_SYSTEM, and never sends the ServiceRequest', async () => {
-    openmrs.getPatient.mockResolvedValue({ ...patientWithEmrId, identifier: [] });
+    inBundle({ ...patientWithEmrId, identifier: [] });
     advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
 
-    await expect(orderRelay.relayServiceRequest(serviceRequestWithSubject))
+    await expect(relay(serviceRequestWithSubject))
       .rejects.toThrow('Patient omrs-patient-uuid has no identifier for system http://www.pih.org/identifiers/lesotho/emr-id');
 
     expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
   });
 
   test('when upsertPatient rejects, the error propagates and createServiceRequest is never called', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    inBundle(patientWithEmrId);
     advapacs.upsertPatient.mockRejectedValue(new Error('AdvaPACS unreachable'));
 
-    await expect(orderRelay.relayServiceRequest(serviceRequestWithSubject)).rejects.toThrow('AdvaPACS unreachable');
+    await expect(relay(serviceRequestWithSubject)).rejects.toThrow('AdvaPACS unreachable');
 
     expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
   });
@@ -275,30 +372,27 @@ describe('orderRelay', () => {
   test('throws when the ServiceRequest has no subject reference, and never sends the ServiceRequest', async () => {
     const noSubjectServiceRequest = { resourceType: 'ServiceRequest', id: 'sr2' };
 
-    await expect(orderRelay.relayServiceRequest(noSubjectServiceRequest))
-      .rejects.toThrow('ServiceRequest sr2 references non-existent Patient undefined');
+    await expect(relay(noSubjectServiceRequest))
+      .rejects.toThrow('ServiceRequest sr2 has no subject Patient');
 
-    expect(openmrs.getPatient).not.toHaveBeenCalled();
     expect(advapacs.upsertPatient).not.toHaveBeenCalled();
     expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
   });
 
-  test('throws when the subject reference does not resolve to an existing Patient', async () => {
-    openmrs.getPatient.mockResolvedValue(null);
-
-    await expect(orderRelay.relayServiceRequest(serviceRequestWithSubject))
-      .rejects.toThrow('ServiceRequest sr1 references non-existent Patient omrs-patient-uuid');
+  test('throws when the Patient is not in the order Bundle', async () => {
+    await expect(relay(serviceRequestWithSubject))
+      .rejects.toThrow('ServiceRequest sr1 references Patient omrs-patient-uuid, which is not in its order Bundle');
 
     expect(advapacs.upsertPatient).not.toHaveBeenCalled();
     expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
   });
 
   test('resolves with the serviceRequest and the AdvaPACS-created resource', async () => {
-    openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+    inBundle(patientWithEmrId);
     advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
     advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-    const result = await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+    const result = await relay(serviceRequestWithSubject);
 
     expect(result).toEqual({
       serviceRequest: serviceRequestWithSubject,
@@ -308,11 +402,11 @@ describe('orderRelay', () => {
 
   describe('accession number stamping (temporary, UHM-9437/9439/9440)', () => {
     test('stamps the placer identifier with the radiology order number system', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         identifier: [placerIdentifier]
       });
@@ -325,11 +419,11 @@ describe('orderRelay', () => {
     });
 
     test('adds a separate accession-number identifier carrying the same value, alongside the placer identifier', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         identifier: [placerIdentifier]
       });
@@ -348,11 +442,11 @@ describe('orderRelay', () => {
     });
 
     test('leaves an unrelated identifier unchanged and only appends the accession-number entry', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         identifier: [placerIdentifier, unrelatedIdentifier]
       });
@@ -363,11 +457,11 @@ describe('orderRelay', () => {
     });
 
     test('leaves identifiers unchanged and adds nothing when there is no placer identifier', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         identifier: [unrelatedIdentifier]
       });
@@ -377,11 +471,11 @@ describe('orderRelay', () => {
     });
 
     test('does not throw and produces an empty identifier array when the input has no identifier field at all', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.identifier).toEqual([]);
@@ -390,11 +484,11 @@ describe('orderRelay', () => {
 
   describe('completed -> draft status override (hack)', () => {
     test('overrides a completed status to draft', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         status: 'completed'
       });
@@ -404,11 +498,11 @@ describe('orderRelay', () => {
     });
 
     test('leaves any other status unchanged', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         status: 'cancelled'
       });
@@ -432,11 +526,11 @@ describe('orderRelay', () => {
     };
 
     test('prepends the HL7 PI coding to the EMR-ID identifier, ahead of its existing coding', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithOpenmrsTypeCoding);
+      inBundle(patientWithOpenmrsTypeCoding);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier[0].type.coding).toEqual([
@@ -446,21 +540,21 @@ describe('orderRelay', () => {
     });
 
     test('leaves an unrelated identifier (different system) unchanged', async () => {
-      openmrs.getPatient.mockResolvedValue({
+      inBundle({
         ...patientWithOpenmrsTypeCoding,
         identifier: [...patientWithOpenmrsTypeCoding.identifier, unrelatedIdentifier]
       });
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier).toContainEqual(unrelatedIdentifier);
     });
 
     test('does not duplicate the PI coding if it is already present', async () => {
-      openmrs.getPatient.mockResolvedValue({
+      inBundle({
         ...patientWithOpenmrsTypeCoding,
         identifier: [
           {
@@ -477,18 +571,18 @@ describe('orderRelay', () => {
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier[0].type.coding).toHaveLength(2);
     });
 
     test('adds a type.coding without throwing when the identifier has no type at all', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier[0].type.coding).toEqual([
@@ -505,14 +599,14 @@ describe('orderRelay', () => {
     };
 
     test('drops an identifier that has no system, keeping the EMR-ID identifier', async () => {
-      openmrs.getPatient.mockResolvedValue({
+      inBundle({
         ...patientWithEmrId,
         identifier: [...patientWithEmrId.identifier, systemlessIdentifier]
       });
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier).toHaveLength(1);
@@ -520,14 +614,14 @@ describe('orderRelay', () => {
     });
 
     test('keeps other identifiers that do have a system', async () => {
-      openmrs.getPatient.mockResolvedValue({
+      inBundle({
         ...patientWithEmrId,
         identifier: [...patientWithEmrId.identifier, systemlessIdentifier, unrelatedIdentifier]
       });
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundPatientArg] = advapacs.upsertPatient.mock.calls[0];
       expect(outboundPatientArg.identifier).toHaveLength(2);
@@ -538,11 +632,11 @@ describe('orderRelay', () => {
 
   describe('stripping the system-less OpenMRS concept coding and wrapping ServiceRequest.code as a CodeableReference (AdvaPACS R5 requires code.concept, not a flat CodeableConcept)', () => {
     test('wraps the stripped coding/text under code.concept, keeping only system-bearing codings', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: {
           coding: [
@@ -563,7 +657,7 @@ describe('orderRelay', () => {
     });
 
     test('leaves code.concept.coding unchanged (aside from the wrap) when every coding already has a system', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
@@ -571,7 +665,7 @@ describe('orderRelay', () => {
         { system: 'http://loinc.org', code: '26148-7' },
         { system: 'http://snomed.info/sct', code: '3581000087107' }
       ];
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { coding }
       });
@@ -581,11 +675,11 @@ describe('orderRelay', () => {
     });
 
     test('does not throw and sends code through unchanged (undefined) when there is no code field at all', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.code).toBeUndefined();
@@ -594,11 +688,11 @@ describe('orderRelay', () => {
 
   describe('occurrencePeriod -> occurrenceDateTime on the outbound ServiceRequest (AdvaPACS only supports occurrenceDateTime)', () => {
     test('converts occurrencePeriod into occurrenceDateTime using its start, and drops occurrencePeriod', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         occurrencePeriod: { start: '2026-08-10T13:18:25-04:00', end: '2026-08-10T13:18:25-04:00' }
       });
@@ -609,11 +703,11 @@ describe('orderRelay', () => {
     });
 
     test('leaves occurrenceDateTime unchanged when the input already has one instead of a period', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         occurrenceDateTime: '2026-08-10T13:18:25-04:00'
       });
@@ -623,11 +717,11 @@ describe('orderRelay', () => {
     });
 
     test('does not throw and leaves occurrenceDateTime undefined when neither field is present', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.occurrenceDateTime).toBeUndefined();
@@ -640,11 +734,11 @@ describe('orderRelay', () => {
       .find((parameter) => parameter.code.coding[0].code === 'modality').valueString;
 
     test('defaults to a CR (X-ray) modality parameter, identified by AdvaPACS\'s "modality" code with a valueString, when there is no code', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.orderDetail).toEqual([{
@@ -661,11 +755,11 @@ describe('orderRelay', () => {
     });
 
     test('uses the code of the DICOM coding as the modality', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: {
           coding: [
@@ -680,11 +774,11 @@ describe('orderRelay', () => {
     });
 
     test('drops the DICOM coding from the outbound code, even when it comes first', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: {
           coding: [
@@ -706,11 +800,11 @@ describe('orderRelay', () => {
     });
 
     test('defaults to CR when the code has no DICOM coding', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }] }
       });
@@ -732,13 +826,13 @@ describe('orderRelay', () => {
     });
 
     beforeEach(() => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
     test('adds the note text as a clinical-history parameter, after the modality', async () => {
-      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, note: [{ text: 'Cough for 3 weeks' }] });
+      await relay({ ...serviceRequestWithSubject, note: [{ text: 'Cough for 3 weeks' }] });
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.orderDetail[0].parameter).toHaveLength(2);
@@ -747,14 +841,14 @@ describe('orderRelay', () => {
     });
 
     test('strips the note itself from the outbound ServiceRequest (AdvaPACS 422s on a note with no author)', async () => {
-      await orderRelay.relayServiceRequest({ ...serviceRequestWithSubject, note: [{ text: 'Cough for 3 weeks' }] });
+      await relay({ ...serviceRequestWithSubject, note: [{ text: 'Cough for 3 weeks' }] });
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg).not.toHaveProperty('note');
     });
 
     test('joins the text of multiple notes, one per line, skipping any without text', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         note: [{ text: 'Cough for 3 weeks' }, { authorString: 'Someone' }, { text: 'Smoker' }]
       });
@@ -764,7 +858,7 @@ describe('orderRelay', () => {
     });
 
     test('adds no clinical-history parameter when there is no note', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.orderDetail[0].parameter).toHaveLength(1);
@@ -783,13 +877,13 @@ describe('orderRelay', () => {
     });
 
     beforeEach(() => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
     test('adds the code text as a requested-procedure-description parameter, after the modality', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }], text: 'Chest, 1 view (X-ray)' }
       });
@@ -801,7 +895,7 @@ describe('orderRelay', () => {
     });
 
     test('still sends the code text under code.concept as well', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }], text: 'Chest, 1 view (X-ray)' }
       });
@@ -811,7 +905,7 @@ describe('orderRelay', () => {
     });
 
     test('comes after the clinical-history parameter when both are present', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { text: 'Chest, 1 view (X-ray)' },
         note: [{ text: 'Cough for 3 weeks' }]
@@ -823,7 +917,7 @@ describe('orderRelay', () => {
     });
 
     test('adds no requested-procedure-description parameter when the code has no text', async () => {
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         code: { coding: [{ system: 'http://loinc.org', code: '36554-4' }] }
       });
@@ -833,7 +927,7 @@ describe('orderRelay', () => {
     });
 
     test('adds no requested-procedure-description parameter when there is no code at all', async () => {
-      await orderRelay.relayServiceRequest(serviceRequestWithSubject);
+      await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.orderDetail[0].parameter).toHaveLength(1);
@@ -842,11 +936,11 @@ describe('orderRelay', () => {
 
   describe('stripping id/meta/text (debugging persistent "missing modality" error)', () => {
     test('strips id, meta, and text from the outbound ServiceRequest', async () => {
-      openmrs.getPatient.mockResolvedValue(patientWithEmrId);
+      inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
-      await orderRelay.relayServiceRequest({
+      await relay({
         ...serviceRequestWithSubject,
         meta: { versionId: '123', lastUpdated: '2026-01-01T00:00:00.000-04:00' },
         text: { status: 'generated', div: '<div>narrative</div>' }

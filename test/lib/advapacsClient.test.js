@@ -102,6 +102,36 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'Practitioner', id: 'advapacs-new' });
   });
 
+  test('searchOrganizations searches /Organization by identifier and returns the matching resources', async () => {
+    mockClient.get.mockResolvedValue({
+      data: { resourceType: 'Bundle', total: 1, entry: [{ resource: { resourceType: 'Organization', id: 'org1' } }] }
+    });
+
+    const result = await advapacs.searchOrganizations('LS-DM');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/Organization', { params: { identifier: 'LS-DM' } });
+    expect(result).toEqual([{ resourceType: 'Organization', id: 'org1' }]);
+  });
+
+  test('searchLocations searches /Location by identifier, scoped to the organization when given', async () => {
+    mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', total: 0 } });
+
+    const result = await advapacs.searchLocations('LS-DM-BOTS', 'org1');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/Location', {
+      params: { identifier: 'LS-DM-BOTS', organization: 'Organization/org1' }
+    });
+    expect(result).toEqual([]);
+  });
+
+  test('searchLocations searches by identifier alone when no organization is given', async () => {
+    mockClient.get.mockResolvedValue({ data: { resourceType: 'Bundle', total: 0 } });
+
+    await advapacs.searchLocations('LS-DM-BOTS');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/Location', { params: { identifier: 'LS-DM-BOTS' } });
+  });
+
   test('createServiceRequest posts the ServiceRequest to /ServiceRequest and returns response data', async () => {
     const serviceRequest = { resourceType: 'ServiceRequest', id: 'sr1' };
     mockClient.post.mockResolvedValue({ data: { resourceType: 'ServiceRequest', id: 'advapacs-sr1' } });

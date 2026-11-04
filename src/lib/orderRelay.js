@@ -1,6 +1,8 @@
 const logger = require('./logger');
 const openmrs = require('./openmrsClient');
 const advapacs = require('./advapacsClient');
+const { resolveSiteLocationReference } = require('./siteLocation');
+const { readOrder } = require('./orderBundle');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
@@ -19,24 +21,27 @@ const DICOM_CODE_SYSTEM = 'http://dicom.nema.org/resources/ontology/DCM';
 const DEFAULT_MODALITY = 'CR';
 
 /**
- * Core order-relay logic, independent of how the ServiceRequest arrived
- * (HTTP push from routes/serviceRequest.js, or a scheduled poll from
- * lib/orderPoller.js). Accepts either a full ServiceRequest resource or
- * a minimal { serviceRequestId } reference.
+ * Core order-relay logic, independent of how the order arrived at routes/serviceRequest.js. Accepts:
+ * - an order Bundle (see orderBundle.js): the ServiceRequest with its Patient, Practitioner, Encounter
+ *   and Visit, as lib/orderPoller.js sends each polled order, so relaying it makes no OpenMRS calls;
+ * - a minimal { serviceRequestId }, for which the order Bundle is fetched in one OpenMRS request.
  */
 async function relayServiceRequest(input) {
-  const serviceRequest = input.resourceType === 'ServiceRequest'
-    ? input
-    : await openmrs.getResource('ServiceRequest', input.serviceRequestId);
+  const order = readOrder(await orderBundleFor(input));
+  const { serviceRequest } = order;
 
-  const patientRef = serviceRequest.subject && serviceRequest.subject.reference;
-  const patientId = patientRef && patientRef.split('/').pop();
+  // The AdvaPACS Site the order belongs to, from its OpenMRS Visit Location (see siteLocation.js).
+  // Worked out before anything is sent, so if it can't be, AdvaPACS is left untouched and the
+  // order can be re-run from OpenHIM once fixed
+  const locationReference = await resolveSiteLocationReference(order);
 
-  // fetch the patient from OpenMRS
-  const patient = patientId ? await openmrs.getPatient(patientId) : null;
-
+  if (!serviceRequest.subject || !serviceRequest.subject.reference) {
+    throw new Error(`ServiceRequest ${serviceRequest.id} has no subject Patient`);
+  }
+  const patient = order.find(serviceRequest.subject);
   if (!patient) {
-    throw new Error(`ServiceRequest ${serviceRequest.id} references non-existent Patient ${patientId}`);
+    throw new Error(`ServiceRequest ${serviceRequest.id} references Patient ` +
+      `${serviceRequest.subject.reference.split('/').pop()}, which is not in its order Bundle`);
   }
   const emrIdentifier = (patient.identifier || []).find(
     (identifier) => identifier.system === ADVAPACS_PATIENT_IDENTIFIER_SYSTEM
@@ -69,7 +74,7 @@ async function relayServiceRequest(input) {
 
   // Likewise send the ordering clinician (if any) first, and reference them by
   // their AdvaPACS-assigned Practitioner id
-  const outboundRequester = await relayRequester(serviceRequest.requester);
+  const outboundRequester = await relayRequester(serviceRequest.requester, order.find(serviceRequest.requester));
 
   // TODO: OpenMRS ServiceRequests are arriving here already marked "completed"
   // due to a workaround in the Radiology app module
@@ -88,6 +93,7 @@ async function relayServiceRequest(input) {
     subject: outboundSubject,
     requester: outboundRequester,
     status: outboundStatus,
+    ...(locationReference && { locationReference }),
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
     code: toCodeableReference(withoutDicomCoding(withoutSystemlessCoding(serviceRequest.code))),
@@ -112,6 +118,17 @@ async function relayServiceRequest(input) {
   });
 
   return { serviceRequest, created };
+}
+
+async function orderBundleFor(input) {
+  if (input && input.resourceType === 'Bundle') return input;
+
+  // In preparation for an OpenMRS module that pushes the ids of new orders to OpenHIM, instead of this
+  // mediator polling for full orders: the order is then fetched here, in the one request a poll makes.
+  // If push is implemented some other way, this input should likely be removed
+  if (input && input.serviceRequestId) return openmrs.getOrderBundle(input.serviceRequestId);
+
+  throw new Error('Expected an order Bundle or { serviceRequestId }');
 }
 
 // TODO: generate an accession number in OpenMRS, till then:
@@ -202,12 +219,12 @@ function toCodeableReference(concept) {
   return concept ? { concept } : undefined;
 }
 
-// Fetches the ServiceRequest's requester (the ordering clinician) from OpenMRS,
-// upserts it into AdvaPACS, and returns a reference to it by its AdvaPACS id.
+// Upserts the ServiceRequest's requester (the ordering clinician, read from the order Bundle) into
+// AdvaPACS, and returns a reference to it by its AdvaPACS id.
 // The ordering clinician is nice-to-have, not worth losing the order over: if
 // anything goes wrong, logs a warning and returns undefined, so the
 // ServiceRequest is sent without one.
-async function relayRequester(requester) {
+async function relayRequester(requester, practitioner) {
   const [resourceType, practitionerId] = ((requester && requester.reference) || '').split('/').slice(-2);
   if (resourceType !== 'Practitioner' || !practitionerId) return undefined;
 
@@ -218,8 +235,14 @@ async function relayRequester(requester) {
     return undefined;
   }
 
+  if (!practitioner) {
+    logger.warn('Ordering clinician is not in the order Bundle; sending ServiceRequest without a requester', {
+      openmrsPractitionerId: practitionerId
+    });
+    return undefined;
+  }
+
   try {
-    const practitioner = await openmrs.getResource('Practitioner', practitionerId);
 
     // Matched in AdvaPACS on the OpenMRS provider UUID
     const uuidIdentifier = { system: ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM, value: practitioner.id };

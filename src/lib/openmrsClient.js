@@ -13,21 +13,12 @@ const client = axios.create({
 });
 
 /**
- * Fetch a single FHIR resource from OpenMRS by type + id.
- * Used when the mediator only receives an id/reference and needs the full
- * ServiceRequest (e.g. to read the imaging modality, ordering provider, patient).
+ * Fetch a single FHIR resource from OpenMRS by type + id. Not used to relay orders, which arrive
+ * with everything they need (see getOrderBundle); used by updateServiceRequestStatus.
  */
 async function getResource(resourceType, id) {
   const { data } = await client.get(`/${resourceType}/${id}`);
   return data;
-}
-
-/**
- * Look up the OpenMRS Patient resource so we can carry the right patient
- * identifier (not just the internal UUID) over to AdvaPACS.
- */
-async function getPatient(patientId) {
-  return getResource('Patient', patientId);
 }
 
 // TODO: not yet tested
@@ -54,23 +45,76 @@ async function updateServiceRequestStatus(serviceRequestId, status) {
   return data;
 }
 
-// TODO: not yet tested
+// Everything the relay needs for an order, fetched in the same request as the order itself: its
+// Patient, ordering Practitioner, Encounter and, through Encounter.partOf, its Visit (FHIR2 represents a
+// Visit as an Encounter; the Visit's location is the Visit Location). Encounter:part-of needs an OpenMRS
+// whose FHIR2 has FM2-708 -- an older one rejects the search
+const ORDER_INCLUDES = [
+  ['_include', 'ServiceRequest:patient'],
+  ['_include', 'ServiceRequest:requester'],
+  ['_include', 'ServiceRequest:encounter'],
+  ['_include:iterate', 'Encounter:part-of']
+];
+
+// A URLSearchParams rather than a plain object, so the repeated _include is sent as FHIR expects
+// (axios would send an array as _include[]=...)
+function orderSearchParams(params) {
+  const searchParams = new URLSearchParams(params);
+  ORDER_INCLUDES.forEach(([name, value]) => searchParams.append(name, value));
+  return searchParams;
+}
+
 /**
- * Search for ServiceRequests, used by lib/orderPoller.js to find orders
- * created/updated since the last poll instead of waiting for a push.
+ * Search for ServiceRequests with their ORDER_INCLUDES, used by lib/orderPoller.js to find orders
+ * created/updated since the last poll. Follows the search's next links, so the result holds every
+ * page's entries (each page carries the resources included for its own orders); rejects if any
+ * page fails.
  */
 async function searchServiceRequests({ status, lastUpdatedAfter } = {}) {
   const params = {};
   if (status) params.status = status;
   if (lastUpdatedAfter) params._lastUpdated = `gt${lastUpdatedAfter}`;
-  const { data } = await client.get('/ServiceRequest', { params });
+
+  let { data: page } = await client.get('/ServiceRequest', { params: orderSearchParams(params) });
+  const entry = [...(page.entry || [])];
+
+  // A next link that repeats would page forever; rejecting leaves the poller's cursor where it was
+  const seen = new Set();
+  for (let next = nextPageQuery(page); next; next = nextPageQuery(page)) {
+    if (seen.has(next)) throw new Error(`ServiceRequest search's next link repeats (${next})`);
+    seen.add(next);
+    ({ data: page } = await client.get(`?${next}`));
+    entry.push(...(page.entry || []));
+  }
+
+  return { resourceType: 'Bundle', type: 'searchset', entry };
+}
+
+// The query of a search Bundle's next link, if it has one. Only the query is used: FHIR2 builds the link
+// from fhir2.uriPrefix or forwarded headers, so it can name a host this mediator can't (or shouldn't)
+// reach, and a paging link addresses the FHIR base rather than /ServiceRequest
+function nextPageQuery(bundle) {
+  const next = (bundle.link || []).find((link) => link.relation === 'next');
+  if (!next) return undefined;
+  // Rejected rather than treated as the last page, which would skip the remaining pages' orders
+  const queryStart = next.url ? next.url.indexOf('?') : -1;
+  if (queryStart < 0) throw new Error(`ServiceRequest search's next link has no query (${next.url})`);
+  return next.url.slice(queryStart + 1);
+}
+
+/**
+ * Fetch a single order with its ORDER_INCLUDES, as the same shape of Bundle a poll returns. A search by
+ * _id rather than a read, as a read can't return included resources.
+ */
+async function getOrderBundle(serviceRequestId) {
+  const { data } = await client.get('/ServiceRequest', { params: orderSearchParams({ _id: serviceRequestId }) });
   return data;
 }
 
 module.exports = {
   getResource,
-  getPatient,
   createResource,
   updateServiceRequestStatus,
-  searchServiceRequests
+  searchServiceRequests,
+  getOrderBundle
 };
