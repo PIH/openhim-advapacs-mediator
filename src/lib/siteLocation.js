@@ -36,21 +36,23 @@ if (ORGANIZATION && !SITE_MAP) {
 // AdvaPACS ids, cached for the life of the process -- only once resolved, so a fix made in
 // AdvaPACS admin is picked up by the next order without a restart
 let organizationId;
-const siteIds = new Map();
+const sites = new Map(); // Site code -> { id, organizationId }
 
 /**
  * Works out the AdvaPACS Site for an order read from its order Bundle (see orderBundle.js): the
  * location of the Visit it was placed in, found through its encounter (FHIR2 represents the Visit as
  * an Encounter, referenced from Encounter.partOf, and doesn't set ServiceRequest.locationReference),
  * mapped to a Site code by ADVAPACS_SITE_MAP, and resolved to the Site's AdvaPACS Location id. Returns
- * the outbound locationReference, or undefined when ADVAPACS_SITE_MAP isn't set.
+ * the outbound locationReference (the Site) and performer (the Site's Organisation: with only
+ * locationReference, AdvaPACS accepted the order but didn't file it under the Site), or undefined
+ * when ADVAPACS_SITE_MAP isn't set.
  *
  * There's deliberately no fallback Site: if the Site can't be determined, for whatever reason
  * (missing data, an unmapped Visit Location, an AdvaPACS error), this throws, so the order is held as
  * a failed OpenHIM transaction that can be re-run once fixed, rather than being filed under the wrong
  * facility.
  */
-async function resolveSiteLocationReference(order) {
+async function resolveSite(order) {
   if (!SITE_MAP) return undefined;
 
   const { serviceRequest } = order;
@@ -62,7 +64,11 @@ async function resolveSiteLocationReference(order) {
       `${serviceRequest.id} is not in ADVAPACS_SITE_MAP`);
   }
 
-  return [{ reference: `Location/${await resolveSiteId(siteCode)}` }];
+  const site = await resolveSiteIds(siteCode);
+  return {
+    locationReference: [{ reference: `Location/${site.id}` }],
+    performer: [{ reference: `Organization/${site.organizationId}` }]
+  };
 }
 
 // The order's Visit Location, as the reference on its Visit: ServiceRequest.encounter -> that
@@ -95,25 +101,31 @@ function findVisitLocation({ serviceRequest, find }) {
   return visitLocation;
 }
 
-async function resolveSiteId(siteCode) {
-  if (siteIds.has(siteCode)) return siteIds.get(siteCode);
+// The Site's AdvaPACS Location id and its Organisation's id
+async function resolveSiteIds(siteCode) {
+  if (sites.has(siteCode)) return sites.get(siteCode);
 
   const orgId = ORGANIZATION ? await resolveOrganizationId() : undefined;
   // Checked against managingOrganization as well, in case AdvaPACS ignores the organization
   // search parameter: a Site from another Organisation (e.g. production's, on a demo mediator)
   // must never match
-  const sites = (await advapacs.searchLocations(siteCode, orgId)).filter(
+  const matches = (await advapacs.searchLocations(siteCode, orgId)).filter(
     (site) => !orgId || idOf(site.managingOrganization) === orgId
   );
-  if (sites.length === 0) {
+  if (matches.length === 0) {
     throw new Error(`AdvaPACS Site ${siteCode} not found` + (ORGANIZATION ? ` in Organisation ${ORGANIZATION}` : ''));
   }
-  if (sites.length > 1) {
+  if (matches.length > 1) {
     throw new Error(`AdvaPACS Site identifier ${siteCode} matches more than one Site`);
   }
+  const siteOrganizationId = idOf(matches[0].managingOrganization);
+  if (!siteOrganizationId) {
+    throw new Error(`AdvaPACS Site ${siteCode} has no Organisation (managingOrganization)`);
+  }
 
-  siteIds.set(siteCode, sites[0].id);
-  return sites[0].id;
+  const site = { id: matches[0].id, organizationId: siteOrganizationId };
+  sites.set(siteCode, site);
+  return site;
 }
 
 async function resolveOrganizationId() {
@@ -132,4 +144,4 @@ function idOf(reference) {
   return reference && reference.reference ? reference.reference.split('/').pop() : undefined;
 }
 
-module.exports = { parseSiteMap, resolveSiteLocationReference };
+module.exports = { parseSiteMap, resolveSite };
