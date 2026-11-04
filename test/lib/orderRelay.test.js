@@ -157,36 +157,41 @@ describe('orderRelay', () => {
     expect(outboundArg).not.toHaveProperty('encounter');
   });
 
-  describe('AdvaPACS Site (locationReference), from the order\'s Visit Location', () => {
+  describe('AdvaPACS Site (locationReference) and its Organisation (performer), from the order\'s Visit Location', () => {
     beforeEach(() => {
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
-    test('sets locationReference to the AdvaPACS Site resolved for the ServiceRequest', async () => {
-      siteLocation.resolveSiteLocationReference.mockResolvedValue([{ reference: 'Location/site-mote' }]);
+    test('sets locationReference and performer to the AdvaPACS Site and Organisation resolved for the ServiceRequest', async () => {
+      siteLocation.resolveSite.mockResolvedValue({
+        locationReference: [{ reference: 'Location/site-mote' }],
+        performer: [{ reference: 'Organization/org1' }]
+      });
 
       await relay(serviceRequestWithSubject);
 
-      expect(siteLocation.resolveSiteLocationReference).toHaveBeenCalledWith(
+      expect(siteLocation.resolveSite).toHaveBeenCalledWith(
         expect.objectContaining({ serviceRequest: serviceRequestWithSubject, find: expect.any(Function) })
       );
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg.locationReference).toEqual([{ reference: 'Location/site-mote' }]);
+      expect(outboundArg.performer).toEqual([{ reference: 'Organization/org1' }]);
     });
 
     test('sends no locationReference when no Site is configured', async () => {
-      siteLocation.resolveSiteLocationReference.mockResolvedValue(undefined);
+      siteLocation.resolveSite.mockResolvedValue(undefined);
 
       await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
       expect(outboundArg).not.toHaveProperty('locationReference');
+      expect(outboundArg).not.toHaveProperty('performer');
     });
 
     test('when the Site can\'t be determined, the error propagates and nothing is sent to AdvaPACS', async () => {
-      siteLocation.resolveSiteLocationReference.mockRejectedValue(new Error('Visit Location vl-other is not in ADVAPACS_SITE_MAP'));
+      siteLocation.resolveSite.mockRejectedValue(new Error('Visit Location vl-other is not in ADVAPACS_SITE_MAP'));
 
       await expect(relay({
         ...serviceRequestWithSubject,

@@ -93,8 +93,10 @@ they need your actual data model, not boilerplate:
   feature on, each order is sent with `locationReference` pointing at the
   AdvaPACS Site for the OpenMRS Visit Location it was placed under — the
   location of the order's Visit, which arrives in the order Bundle as the
-  `Encounter` its own encounter is `partOf` (see `siteLocation.js`).
-  `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
+  `Encounter` its own encounter is `partOf` (see `siteLocation.js`) — and
+  with `performer` pointing at that Site's Organisation (its
+  `managingOrganization`): with only `locationReference`, AdvaPACS
+  accepted the order but didn't file it under the Site. `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
   the optional `ADVAPACS_ORGANIZATION` only accepts Sites in that
   Organisation (see `.env.example`). There's no fallback Site: an order
   whose Site can't be determined fails, and can be re-run from OpenHIM once
