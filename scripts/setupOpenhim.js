@@ -70,16 +70,13 @@ async function waitForOpenhim(retries = 30, delayMs = 2000) {
   }
 }
 
-// The inbound channel's authType: "private" (mediatorConfig.json) requires an
-// OpenHIM Client matching its "allow" list ("openmrs") to exist -- this is
-// what orderPoller.js authenticates as via Basic auth. Password is hashed
-// here (sha512(password + salt)) since OpenHIM's Clients API expects a
-// precomputed hash, not a plaintext password, unlike the Users API.
-// "allow" matches either a Client's clientID or its roles -- roles must stay
-// empty here since OpenHIM rejects a Client whose clientID duplicates one of
-// its own role names ("ClientID 'openmrs' cannot be the same as a role name"),
-// and clientID alone already satisfies the "openmrs" allow entry.
-function buildClient(clientID, name, password) {
+// An OpenHIM Client definition that authenticates with Basic auth. The password is hashed here
+// (sha512(password + salt)) since OpenHIM's Clients API expects a precomputed hash, not a plaintext
+// password, unlike the Users API. A channel's "allow" matches either a Client's clientID or its
+// roles -- roles stay empty since OpenHIM rejects a Client whose clientID duplicates one of its own
+// role names ("ClientID 'openmrs' cannot be the same as a role name"), and the clientID alone
+// already satisfies a channel's allow entry.
+function clientWithHashedPassword(clientID, name, password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.createHash('sha512')
     .update(password)
@@ -95,19 +92,21 @@ function buildClient(clientID, name, password) {
   };
 }
 
-function buildInboundClient() {
-  return buildClient(
+// The Client orderPoller.js (or, in push mode, OpenMRS) sends orders to the inbound channel as --
+// that channel's authType: "private" (mediatorConfig.json) allows only "openmrs".
+function orderPollerClient() {
+  return clientWithHashedPassword(
     process.env.OPENHIM_INBOUND_CLIENT_ID || 'openmrs',
     'OpenMRS / order poller',
     process.env.OPENHIM_INBOUND_CLIENT_PASSWORD
   );
 }
 
-// AdvaPACS's webhook (Configuration > Webhooks, Basic Authentication) sends this Client's id and
-// ADVAPACS_WEBHOOK_SECRET as its username and password. Without ADVAPACS_WEBHOOK_SECRET no Client is
-// created, so the webhook channel accepts no one.
-function buildWebhookClient() {
-  return buildClient(webhookClientId(), 'AdvaPACS webhook', process.env.ADVAPACS_WEBHOOK_SECRET);
+// The Client AdvaPACS's webhook (Configuration > Webhooks, Basic Authentication) calls the webhook
+// channel as, sending this Client's id and ADVAPACS_WEBHOOK_SECRET as its username and password.
+// Without ADVAPACS_WEBHOOK_SECRET no Client is created, so the webhook channel accepts no one.
+function advapacsWebhookClient() {
+  return clientWithHashedPassword(webhookClientId(), 'AdvaPACS webhook', process.env.ADVAPACS_WEBHOOK_SECRET);
 }
 
 async function upsertClient(clientDef) {
@@ -146,9 +145,9 @@ async function upsertChannel(channelDef) {
 
 async function main() {
   await waitForOpenhim();
-  await upsertClient(buildInboundClient());
+  await upsertClient(orderPollerClient());
   if (process.env.ADVAPACS_WEBHOOK_SECRET) {
-    await upsertClient(buildWebhookClient());
+    await upsertClient(advapacsWebhookClient());
   } else {
     console.log('ADVAPACS_WEBHOOK_SECRET not set: no AdvaPACS webhook client, so the webhook channel accepts no one');
   }
