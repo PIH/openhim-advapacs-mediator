@@ -43,13 +43,14 @@ orders and results between them as FHIR resources.
    to AdvaPACS Order Push", `^/advapacs/.*$`) rather than calling AdvaPACS
    directly, so each leg is logged and auto-retried by OpenHIM (see Known
    limitations).
-4. AdvaPACS would perform/read the study, then fire its own FHIR
-   `Subscription` (rest-hook) at `POST /webhooks/advapacs` on this mediator,
-   carrying an `ImagingStudy` or `DiagnosticReport` — **this leg is currently
-   disabled and untested end-to-end, see Known limitations.**
-5. `src/routes/subscriptionWebhook.js` would write that resource into
-   OpenMRS and flip the originating `ServiceRequest` to `completed` — it's a
-   placeholder today, not yet functional (see Known limitations).
+4. As the study is performed and reported, AdvaPACS calls its webhook
+   (Configuration > Webhooks) with events such as "study created" and
+   "report updated". Each event carries only a reference to the resource
+   (`{ eventType, data: { type, id } }`). The webhook goes through a third
+   OpenHIM channel ("AdvaPACS Webhook", `^/webhooks/advapacs$`) to
+   `POST /webhooks/advapacs` (`src/routes/advapacsWebhook.js`). **For now it
+   only logs each event** (UHM-9458/UHM-9459), so the real event sequence can
+   be seen before anything is written to OpenMRS. See "AdvaPACS webhook" below.
 
 ```
 orderPoller.js (every ORDER_POLL_INTERVAL_MS)
@@ -62,6 +63,37 @@ orderPoller.js (every ORDER_POLL_INTERVAL_MS)
           --HTTP POST--> OpenHIM outbound channel  ^/advapacs/.*$  (auto-retry enabled)
             --pathTransform strips /advapacs, routes to--> real AdvaPACS host
 ```
+
+## AdvaPACS webhook
+
+```
+AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-router/webhooks/advapacs
+  --strips /openhim-router--> OpenHIM router :5001, channel "AdvaPACS Webhook"  ^/webhooks/advapacs$
+    (authType private: only the "advapacs" OpenHIM Client; forwards the Authorization header)
+    --routes to--> mediator's POST /webhooks/advapacs (routes/advapacsWebhook.js): checks the
+                   credentials again, then logs the event
+```
+
+- **Credentials.** AdvaPACS calls the channel as an OpenHIM Client: in the
+  webhook's settings choose Basic Authentication, with the Client's id
+  (`ADVAPACS_WEBHOOK_CLIENT_ID`, default `advapacs`) as the username and
+  `ADVAPACS_WEBHOOK_SECRET` as the password. `scripts/setupOpenhim.js`
+  creates the Client from those on every boot; without
+  `ADVAPACS_WEBHOOK_SECRET` it creates none, so the channel accepts no one
+  (a Client created earlier stays until deleted in the OpenHIM console). The
+  mediator checks the same credentials again, as a backstop in case its port
+  is ever reached without going through OpenHIM.
+- **Endpoint.** The reverse proxy must forward only
+  `/openhim-router/webhooks/*` to the router, never the whole router (see the
+  outbound channel under Known limitations). On kol-ci the webhook URL is
+  `https://kol-ci.pih-emr.org/openhim-router/webhooks/advapacs`.
+- **Events.** AdvaPACS offers study, patient, order and report created /
+  updated (/ deleted) events. Subscribe to study created/updated and report
+  created/updated.
+- **Logging.** Each event is logged with its type, id, timestamp and the
+  resource reference. Fields the docs don't describe are logged by name only,
+  so nothing unexpected (e.g. patient details) reaches the logs. An event
+  without an `eventType` and `data.id` gets a 400.
 
 ## Upgrading to the single-request poll
 
@@ -78,7 +110,7 @@ This scaffold wires up the transport, auth, and registration plumbing
 end-to-end and will run. Two things are intentionally left as `TODO`s because
 they need your actual data model, not boilerplate:
 
-- **Identifier reconciliation** (`serviceRequest.js`, `subscriptionWebhook.js`):
+- **Identifier reconciliation** (`serviceRequest.js`, `advapacsWebhook.js`):
   right now the AdvaPACS-side id returned on order push is only logged. You'll
   want a small lookup store (a table, or OpenHIM's own transaction/orchestration
   log) mapping OpenMRS `ServiceRequest.id` ↔ AdvaPACS `ServiceRequest.id`, so
@@ -129,14 +161,10 @@ they need your actual data model, not boilerplate:
   `createServiceRequest`). If that needs to be retried too, it'd need either a
   translation layer that emits OpenHIM's error envelope, or a separate
   retry/alerting mechanism — not built here.
-- **The AdvaPACS result-delivery path (webhook) is disabled and untested.**
-  `src/routes/subscriptionWebhook.js` is a placeholder — written but never
-  exercised against a real AdvaPACS webhook delivery, since all effort so
-  far has gone into the outbound order-push path. It isn't mounted in
-  `src/index.js`, `advapacsClient.js`'s `ensureSubscription` isn't called on
-  startup, and its channel/endpoint entries have been removed from
-  `mediatorConfig.json`. Each disabled spot is marked with a matching
-  comment — re-enable all three once this path is ready to test.
+- **The AdvaPACS webhook only logs events.** Nothing is written to OpenMRS
+  yet: that comes once the real event sequence has been seen (UHM-9458,
+  UHM-9459). A webhook AdvaPACS fails to deliver isn't retried by anything
+  here.
 - **The outbound AdvaPACS channel is `authType: "public"` — deliberately, not
   an oversight.** The inbound channel (OpenMRS/poller → mediator) has real
   OpenHIM Client auth (`authType: "private"`, an `openmrs` Client created by
@@ -375,24 +403,25 @@ npm test
 Unit tests only — every HTTP call (to OpenMRS, AdvaPACS/OpenHIM's outbound
 channel) is mocked with Jest, so nothing needs to be running: no Docker, no
 OpenHIM, no OpenMRS. Covers `orderRelay.js`, `advapacsClient.js`,
-`openmrsClient.js`, `orderPoller.js`, and `routes/serviceRequest.js`. Does
-**not** cover `src/index.js`'s route-mounting/ingestion-mode logic (no
-testable seam without a refactor) or `subscriptionWebhook.js` — see
+`openmrsClient.js`, `orderPoller.js`, `routes/serviceRequest.js`,
+`routes/advapacsWebhook.js` and `scripts/setupOpenhim.js`'s Clients and
+channels. Does **not** cover `src/index.js`'s route-mounting/ingestion-mode
+logic (no testable seam without a refactor) — see
 `docs/superpowers/specs/2026-08-06-test-suite-design.md` for why.
 
 ## Files
 
 ```
 mediatorConfig.json         OpenHIM mediator registration (endpoints, channels, config defs)
-scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels + the "openmrs" OpenHIM Client via OpenHIM's API; run automatically by src/index.js on every boot, or standalone via `node scripts/setupOpenhim.js`
+scripts/setupOpenhim.js     Idempotently creates/updates the two order-push channels and the webhook channel, plus the "openmrs" and AdvaPACS webhook OpenHIM Clients, via OpenHIM's API; run automatically by src/index.js on every boot, or standalone via `node scripts/setupOpenhim.js`
 build-image.sh              Runs npm test, then builds this repo's Dockerfile into the local Docker image cache (no registry) -- see "Building the mediator image locally"
 Dockerfile                  Mediator's own container image
 src/index.js                Registration + server bootstrap + OpenHIM provisioning; always mounts the push endpoint, additionally starts the poller in 'poll' mode
 src/lib/openmrsClient.js    OpenMRS FHIR2 client (read/search ServiceRequest/Patient, write results)
-src/lib/advapacsClient.js   Calls OpenHIM's outbound channel (ADVAPACS_CHANNEL_URL), not AdvaPACS directly; upsertPatient + createServiceRequest (+ ensureSubscription, currently unused -- see Known limitations)
+src/lib/advapacsClient.js   Calls OpenHIM's outbound channel (ADVAPACS_CHANNEL_URL), not AdvaPACS directly; upsertPatient/upsertPractitioner, Organization/Location search and createServiceRequest
 src/lib/orderRelay.js       Shared order-relay logic: upserts Patient first, then remaps ServiceRequest.subject to AdvaPACS's own Patient id and reshapes the rest of the ServiceRequest for AdvaPACS before pushing it
 src/lib/orderPoller.js      Poll-based ingestion (ORDER_INGESTION_MODE=poll) -- submits via OpenHIM's inbound channel
 src/lib/sharedSecretAuth.js Shared-secret Express middleware factory (crypto.timingSafeEqual compare) -- backs the inbound X-Mediator-Secret check
 src/routes/serviceRequest.js       Inbound channel's target; always mounted regardless of ingestion mode; requires X-Mediator-Secret
-src/routes/subscriptionWebhook.js  PLACEHOLDER result webhook handler -- not yet functional/tested, currently disabled (see Known limitations)
+src/routes/advapacsWebhook.js      Webhook channel's target; checks the AdvaPACS Client's Basic auth credentials, then logs the event (log-only for now)
 ```

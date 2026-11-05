@@ -93,46 +93,10 @@ async function searchLocations(identifier, organizationId) {
   return (data.entry || []).map((entry) => entry.resource);
 }
 
-/**
- * Fetch a resource by absolute reference URL, used when a Subscription
- * notification arrives as a lightweight ping rather than a full resource
- * payload and we need to go fetch the ImagingStudy/DiagnosticReport ourselves.
- */
-async function getResourceByUrl(url) {
-  const { data } = await axios.get(url, { headers: client.defaults.headers });
-  return data;
-}
-
-// TODO: currently disabled, test
-/**
- * Register (or refresh) a FHIR Subscription with AdvaPACS so it will
- * rest-hook our webhook endpoint whenever an ImagingStudy or DiagnosticReport
- * changes. Run this once at mediator startup / deploy time, not per-request.
- */
-async function ensureSubscription(webhookUrl, webhookSecret, criteria = 'ImagingStudy') {
-  const subscription = {
-    resourceType: 'Subscription',
-    status: 'active',
-    reason: 'openhim-advapacs-mediator result delivery',
-    criteria,
-    channel: {
-      type: 'rest-hook',
-      endpoint: webhookUrl,
-      payload: 'application/fhir+json',
-      header: [`Authorization: Bearer ${webhookSecret}`]
-    }
-  };
-  const { data } = await client.post('/Subscription', subscription);
-  logger.info('Registered AdvaPACS subscription', { criteria, id: data.id });
-  return data;
-}
-
 module.exports = {
   createServiceRequest,
   upsertPatient,
   upsertPractitioner,
   searchOrganizations,
-  searchLocations,
-  getResourceByUrl,
-  ensureSubscription
+  searchLocations
 };
