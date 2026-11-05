@@ -43,9 +43,9 @@ const sites = new Map(); // Site code -> { id, organizationId }
  * location of the Visit it was placed in, found through its encounter (FHIR2 represents the Visit as
  * an Encounter, referenced from Encounter.partOf, and doesn't set ServiceRequest.locationReference),
  * mapped to a Site code by ADVAPACS_SITE_MAP, and resolved to the Site's AdvaPACS Location id. Returns
- * the outbound locationReference (the Site) and performer (the Site's Organisation: with only
- * locationReference, AdvaPACS accepted the order but didn't file it under the Site), or undefined
- * when ADVAPACS_SITE_MAP isn't set.
+ * the outbound location (the Site) and performer (the Site's Organisation), or undefined when
+ * ADVAPACS_SITE_MAP isn't set. location is R5's: a CodeableReference, so the Location reference is
+ * nested under .reference. (R4's locationReference doesn't exist in R5; AdvaPACS silently drops it.)
  *
  * There's deliberately no fallback Site: if the Site can't be determined, for whatever reason
  * (missing data, an unmapped Visit Location, an AdvaPACS error), this throws, so the order is held as
@@ -66,7 +66,7 @@ async function resolveSite(order) {
 
   const site = await resolveSiteIds(siteCode);
   return {
-    locationReference: [{ reference: `Location/${site.id}` }],
+    location: [{ reference: { reference: `Location/${site.id}` } }],
     performer: [{ reference: `Organization/${site.organizationId}` }]
   };
 }

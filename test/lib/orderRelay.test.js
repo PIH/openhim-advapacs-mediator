@@ -157,16 +157,16 @@ describe('orderRelay', () => {
     expect(outboundArg).not.toHaveProperty('encounter');
   });
 
-  describe('AdvaPACS Site (locationReference) and its Organisation (performer), from the order\'s Visit Location', () => {
+  describe('AdvaPACS Site (location) and its Organisation (performer), from the order\'s Visit Location', () => {
     beforeEach(() => {
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
-    test('sets locationReference and performer to the AdvaPACS Site and Organisation resolved for the ServiceRequest', async () => {
+    test('sets location and performer to the AdvaPACS Site and Organisation resolved for the ServiceRequest', async () => {
       siteLocation.resolveSite.mockResolvedValue({
-        locationReference: [{ reference: 'Location/site-mote' }],
+        location: [{ reference: { reference: 'Location/site-mote' } }],
         performer: [{ reference: 'Organization/org1' }]
       });
 
@@ -176,17 +176,19 @@ describe('orderRelay', () => {
         expect.objectContaining({ serviceRequest: serviceRequestWithSubject, find: expect.any(Function) })
       );
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(outboundArg.locationReference).toEqual([{ reference: 'Location/site-mote' }]);
+      expect(outboundArg.location).toEqual([{ reference: { reference: 'Location/site-mote' } }]);
+      // R4's locationReference doesn't exist in R5, and AdvaPACS silently drops it
+      expect(outboundArg).not.toHaveProperty('locationReference');
       expect(outboundArg.performer).toEqual([{ reference: 'Organization/org1' }]);
     });
 
-    test('sends no locationReference when no Site is configured', async () => {
+    test('sends no location when no Site is configured', async () => {
       siteLocation.resolveSite.mockResolvedValue(undefined);
 
       await relay(serviceRequestWithSubject);
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(outboundArg).not.toHaveProperty('locationReference');
+      expect(outboundArg).not.toHaveProperty('location');
       expect(outboundArg).not.toHaveProperty('performer');
     });
 

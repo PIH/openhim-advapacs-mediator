@@ -90,13 +90,15 @@ they need your actual data model, not boilerplate:
   dropped from the outbound `ServiceRequest` entirely, since AdvaPACS can't
   resolve OpenMRS UUIDs for either.
 - **AdvaPACS Site (UHM-9468)**: with AdvaPACS's Organisations & Sites
-  feature on, each order is sent with `locationReference` pointing at the
+  feature on, each order is sent with `location` pointing at the
   AdvaPACS Site for the OpenMRS Visit Location it was placed under — the
   location of the order's Visit, which arrives in the order Bundle as the
   `Encounter` its own encounter is `partOf` (see `siteLocation.js`) — and
   with `performer` pointing at that Site's Organisation (its
-  `managingOrganization`): with only `locationReference`, AdvaPACS
-  accepted the order but didn't file it under the Site. `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
+  `managingOrganization`). `location` is R5's CodeableReference, so the
+  Location is nested: `[{ "reference": { "reference": "Location/<id>" } }]`.
+  AdvaPACS's ServiceRequest docs show R4's `locationReference`, which
+  AdvaPACS accepts but silently drops. `ADVAPACS_SITE_MAP` maps Visit Location uuids to Site identifiers, and
   the optional `ADVAPACS_ORGANIZATION` only accepts Sites in that
   Organisation (see `.env.example`). There's no fallback Site: an order
   whose Site can't be determined fails, and can be re-run from OpenHIM once

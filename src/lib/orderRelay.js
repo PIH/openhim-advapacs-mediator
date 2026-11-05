@@ -93,7 +93,7 @@ async function relayServiceRequest(input) {
     subject: outboundSubject,
     requester: outboundRequester,
     status: outboundStatus,
-    ...(site && { locationReference: site.locationReference, performer: site.performer }),
+    ...(site && { location: site.location, performer: site.performer }),
     // AdvaPACS's R5 endpoint models ServiceRequest.code as a CodeableReference,
     // not R4's flat CodeableConcept -- wrap it under "concept".
     code: toCodeableReference(withoutDicomCoding(withoutSystemlessCoding(serviceRequest.code))),
