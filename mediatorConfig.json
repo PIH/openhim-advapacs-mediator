@@ -2,7 +2,7 @@
   "urn": "urn:mediator:openmrs-advapacs-fhir",
   "version": "0.1.0",
   "name": "OpenMRS-AdvaPACS FHIR Mediator",
-  "description": "Routes radiology ServiceRequests from OpenMRS to AdvaPACS and delivers AdvaPACS FHIR Subscription results (ImagingStudy / DiagnosticReport) back into OpenMRS.",
+  "description": "Routes radiology ServiceRequests from OpenMRS to AdvaPACS, and receives AdvaPACS's webhook events (for now only logged).",
   "endpoints": [
     {
       "name": "Order Push endpoint",
@@ -11,6 +11,14 @@
       "primary": true,
       "type": "http",
       "path": "/fhir/ServiceRequest"
+    },
+    {
+      "name": "AdvaPACS webhook endpoint",
+      "host": "0.0.0.0",
+      "port": "3500",
+      "primary": false,
+      "type": "http",
+      "path": "/webhooks/advapacs"
     }
   ],
   "defaultChannelConfig": [
@@ -54,6 +62,24 @@
       "autoRetryEnabled": true,
       "autoRetryPeriodMinutes": 1,
       "autoRetryMaxAttempts": 5
+    },
+    {
+      "name": "AdvaPACS to Mediator Study and Report Webhook",
+      "urlPattern": "^/webhooks/advapacs$",
+      "routes": [
+        {
+          "name": "OpenMRS-AdvaPACS FHIR Mediator webhook route",
+          "host": "openhim-advapacs-mediator",
+          "port": 3500,
+          "primary": true,
+          "type": "http",
+          "forwardAuthHeader": true
+        }
+      ],
+      "allow": ["advapacs"],
+      "authType": "private",
+      "methods": ["POST"],
+      "type": "http"
     }
   ],
   "configDefs": [

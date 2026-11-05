@@ -9,10 +9,23 @@ const mediatorConfig = require('../mediatorConfig.json');
 // to produce a working setup.
 const CHANNEL_NAMES = [
   'OpenMRS to Mediator Order Push',
-  'Mediator to AdvaPACS Order Push'
+  'Mediator to AdvaPACS Order Push',
+  'AdvaPACS to Mediator Study and Report Webhook'
 ];
 
 const OUTBOUND_CHANNEL_NAME = 'Mediator to AdvaPACS Order Push';
+const WEBHOOK_CHANNEL_NAME = 'AdvaPACS to Mediator Study and Report Webhook';
+
+// The OpenHIM Client AdvaPACS calls the webhook channel as -- mediatorConfig.json's channel allows
+// "advapacs", replaced here when ADVAPACS_WEBHOOK_CLIENT_ID names another (e.g. one per instance).
+function webhookClientId() {
+  return process.env.ADVAPACS_WEBHOOK_CLIENT_ID || 'advapacs';
+}
+
+function withWebhookClient(channelDef) {
+  if (channelDef.name !== WEBHOOK_CHANNEL_NAME) return channelDef;
+  return { ...channelDef, allow: [webhookClientId()] };
+}
 
 // OpenHIM channels can't read env vars themselves, so mediatorConfig.json's
 // route host is just a documentation placeholder (example.api.integration.advapacs.com).
@@ -57,29 +70,43 @@ async function waitForOpenhim(retries = 30, delayMs = 2000) {
   }
 }
 
-// The inbound channel's authType: "private" (mediatorConfig.json) requires an
-// OpenHIM Client matching its "allow" list ("openmrs") to exist -- this is
-// what orderPoller.js authenticates as via Basic auth. Password is hashed
-// here (sha512(password + salt)) since OpenHIM's Clients API expects a
-// precomputed hash, not a plaintext password, unlike the Users API.
-// "allow" matches either a Client's clientID or its roles -- roles must stay
-// empty here since OpenHIM rejects a Client whose clientID duplicates one of
-// its own role names ("ClientID 'openmrs' cannot be the same as a role name"),
-// and clientID alone already satisfies the "openmrs" allow entry.
-function buildInboundClient() {
+// An OpenHIM Client definition that authenticates with Basic auth. The password is hashed here
+// (sha512(password + salt)) since OpenHIM's Clients API expects a precomputed hash, not a plaintext
+// password, unlike the Users API. A channel's "allow" matches either a Client's clientID or its
+// roles -- roles stay empty since OpenHIM rejects a Client whose clientID duplicates one of its own
+// role names ("ClientID 'openmrs' cannot be the same as a role name"), and the clientID alone
+// already satisfies a channel's allow entry.
+function clientWithHashedPassword(clientID, name, password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.createHash('sha512')
-    .update(process.env.OPENHIM_INBOUND_CLIENT_PASSWORD)
+    .update(password)
     .update(salt)
     .digest('hex');
   return {
-    clientID: process.env.OPENHIM_INBOUND_CLIENT_ID || 'openmrs',
-    name: 'OpenMRS / order poller',
+    clientID,
+    name,
     roles: [],
     passwordAlgorithm: 'sha512',
     passwordSalt: salt,
     passwordHash: hash
   };
+}
+
+// The Client orderPoller.js (or, in push mode, OpenMRS) sends orders to the inbound channel as --
+// that channel's authType: "private" (mediatorConfig.json) allows only "openmrs".
+function orderPollerClient() {
+  return clientWithHashedPassword(
+    process.env.OPENHIM_INBOUND_CLIENT_ID || 'openmrs',
+    'OpenMRS / order poller',
+    process.env.OPENHIM_INBOUND_CLIENT_PASSWORD
+  );
+}
+
+// The Client AdvaPACS's webhook (Configuration > Webhooks, Basic Authentication) calls the webhook
+// channel as, sending this Client's id and ADVAPACS_WEBHOOK_SECRET as its username and password.
+// Without ADVAPACS_WEBHOOK_SECRET no Client is created, so the webhook channel accepts no one.
+function advapacsWebhookClient() {
+  return clientWithHashedPassword(webhookClientId(), 'AdvaPACS webhook', process.env.ADVAPACS_WEBHOOK_SECRET);
 }
 
 async function upsertClient(clientDef) {
@@ -118,10 +145,16 @@ async function upsertChannel(channelDef) {
 
 async function main() {
   await waitForOpenhim();
-  await upsertClient(buildInboundClient());
+  await upsertClient(orderPollerClient());
+  if (process.env.ADVAPACS_WEBHOOK_SECRET) {
+    await upsertClient(advapacsWebhookClient());
+  } else {
+    console.log('ADVAPACS_WEBHOOK_SECRET not set: no AdvaPACS webhook client, so the webhook channel accepts no one');
+  }
   const channels = mediatorConfig.defaultChannelConfig
     .filter((c) => CHANNEL_NAMES.includes(c.name))
-    .map(withRealAdvapacsRoute);
+    .map(withRealAdvapacsRoute)
+    .map(withWebhookClient);
   for (const channel of channels) {
     await upsertChannel(channel);
   }
