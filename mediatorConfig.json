@@ -64,7 +64,7 @@
       "autoRetryMaxAttempts": 5
     },
     {
-      "name": "AdvaPACS Webhook",
+      "name": "AdvaPACS to Mediator Study and Report Webhook",
       "urlPattern": "^/webhooks/advapacs$",
       "routes": [
         {

@@ -47,7 +47,8 @@ orders and results between them as FHIR resources.
    (Configuration > Webhooks) with events such as "study created" and
    "report updated". Each event carries only a reference to the resource
    (`{ eventType, data: { type, id } }`). The webhook goes through a third
-   OpenHIM channel ("AdvaPACS Webhook", `^/webhooks/advapacs$`) to
+   OpenHIM channel ("AdvaPACS to Mediator Study and Report Webhook",
+   `^/webhooks/advapacs$`) to
    `POST /webhooks/advapacs` (`src/routes/advapacsWebhook.js`). **For now it
    only logs each event** (UHM-9458/UHM-9459), so the real event sequence can
    be seen before anything is written to OpenMRS. See "AdvaPACS webhook" below.
@@ -68,7 +69,7 @@ orderPoller.js (every ORDER_POLL_INTERVAL_MS)
 
 ```
 AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-router/webhooks/advapacs
-  --strips /openhim-router--> OpenHIM router :5001, channel "AdvaPACS Webhook"  ^/webhooks/advapacs$
+  --strips /openhim-router--> OpenHIM router :5001, channel "AdvaPACS to Mediator Study and Report Webhook"  ^/webhooks/advapacs$
     (authType private: only the "advapacs" OpenHIM Client; forwards the Authorization header)
     --routes to--> mediator's POST /webhooks/advapacs (routes/advapacsWebhook.js): checks the
                    credentials again, then logs the event

@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { client: api } = require('../../src/lib/openhimClient');
 const { main } = require('../../scripts/setupOpenhim');
 
-const WEBHOOK_CHANNEL = 'AdvaPACS Webhook';
+const WEBHOOK_CHANNEL = 'AdvaPACS to Mediator Study and Report Webhook';
 
 function posted(path) {
   return api.post.mock.calls.filter(([p]) => p === path).map(([, body]) => body);

@@ -10,11 +10,11 @@ const mediatorConfig = require('../mediatorConfig.json');
 const CHANNEL_NAMES = [
   'OpenMRS to Mediator Order Push',
   'Mediator to AdvaPACS Order Push',
-  'AdvaPACS Webhook'
+  'AdvaPACS to Mediator Study and Report Webhook'
 ];
 
 const OUTBOUND_CHANNEL_NAME = 'Mediator to AdvaPACS Order Push';
-const WEBHOOK_CHANNEL_NAME = 'AdvaPACS Webhook';
+const WEBHOOK_CHANNEL_NAME = 'AdvaPACS to Mediator Study and Report Webhook';
 
 // The OpenHIM Client AdvaPACS calls the webhook channel as -- mediatorConfig.json's channel allows
 // "advapacs", replaced here when ADVAPACS_WEBHOOK_CLIENT_ID names another (e.g. one per instance).
