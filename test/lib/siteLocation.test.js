@@ -38,7 +38,8 @@ describe('siteLocation', () => {
 
   // What's sent for an order at moteSite: the Site, and its Organisation as the performer
   const moteResult = {
-    locationReference: [{ reference: 'Location/site-mote' }],
+    // R5's ServiceRequest.location is a CodeableReference, so the Location is nested under reference
+    location: [{ reference: { reference: 'Location/site-mote' } }],
     performer: [{ reference: 'Organization/org1' }]
   };
 
