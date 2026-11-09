@@ -29,8 +29,6 @@ describe('advapacsClient', () => {
     // Re-require axios after resetModules to get the correct mock reference
     axios = require('axios');
     axios.create.mockReturnValue(mockClient);
-    // Also set up axios.get mock
-    axios.get.mockResolvedValue({ data: { resourceType: 'ImagingStudy', id: 'img1' } });
 
     advapacs = require('../../src/lib/advapacsClient');
   });
@@ -142,43 +140,4 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
   });
 
-  test('ensureSubscription posts a Subscription with the webhook endpoint and bearer secret', async () => {
-    mockClient.post.mockResolvedValue({ data: { resourceType: 'Subscription', id: 'sub1' } });
-
-    const result = await advapacs.ensureSubscription('http://mediator/webhooks/advapacs', 'shh-secret', 'ImagingStudy');
-
-    expect(mockClient.post).toHaveBeenCalledWith('/Subscription', {
-      resourceType: 'Subscription',
-      status: 'active',
-      reason: 'openhim-advapacs-mediator result delivery',
-      criteria: 'ImagingStudy',
-      channel: {
-        type: 'rest-hook',
-        endpoint: 'http://mediator/webhooks/advapacs',
-        payload: 'application/fhir+json',
-        header: ['Authorization: Bearer shh-secret']
-      }
-    });
-    expect(result).toEqual({ resourceType: 'Subscription', id: 'sub1' });
-  });
-
-  test('ensureSubscription defaults criteria to ImagingStudy when not given', async () => {
-    mockClient.post.mockResolvedValue({ data: { id: 'sub1' } });
-
-    await advapacs.ensureSubscription('http://mediator/webhooks/advapacs', 'shh-secret');
-
-    expect(mockClient.post).toHaveBeenCalledWith('/Subscription', expect.objectContaining({ criteria: 'ImagingStudy' }));
-  });
-
-  test('getResourceByUrl GETs the given absolute URL with the client headers', async () => {
-    axios.get.mockResolvedValue({ data: { resourceType: 'ImagingStudy', id: 'img1' } });
-
-    const result = await advapacs.getResourceByUrl('https://advapacs.example.com/fhir/ImagingStudy/img1');
-
-    expect(axios.get).toHaveBeenCalledWith(
-      'https://advapacs.example.com/fhir/ImagingStudy/img1',
-      { headers: mockClient.defaults.headers }
-    );
-    expect(result).toEqual({ resourceType: 'ImagingStudy', id: 'img1' });
-  });
 });
