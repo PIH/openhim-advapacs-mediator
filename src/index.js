@@ -9,6 +9,7 @@ const mediatorConfig = require('../mediatorConfig.json');
 const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
+const healthRoute = require('./routes/health');
 // DISABLED (for now): the AdvaPACS result-delivery path (routes/subscriptionWebhook.js
 // + advapacsClient.ensureSubscription below) hasn't been tested at all yet --
 // all effort so far has gone into the outbound order-push path. Commented out
@@ -34,9 +35,7 @@ function startServer() {
   }
 
   // Unhealthy until the modality map has loaded: orders are held (not relayed) until then
-  app.get('/health', (req, res) => (modalityMap.isLoaded()
-    ? res.status(200).json({ status: 'up' })
-    : res.status(503).json({ status: 'modality map not loaded' })));
+  app.use('/', healthRoute);
 
   const port = process.env.MEDIATOR_PORT || 3500;
   app.listen(port, () => {
