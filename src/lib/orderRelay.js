@@ -3,6 +3,7 @@ const openmrs = require('./openmrsClient');
 const advapacs = require('./advapacsClient');
 const { resolveSite } = require('./siteLocation');
 const { readOrder } = require('./orderBundle');
+const modalityMap = require('./modalityMap');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
@@ -27,6 +28,10 @@ const DEFAULT_MODALITY = 'CR';
  * - a minimal { serviceRequestId }, for which the order Bundle is fetched in one OpenMRS request.
  */
 async function relayServiceRequest(input) {
+  // Hold every order until the modality map has loaded, rather than send one with a guessed modality.
+  // First, so nothing at all reaches AdvaPACS; the caller is answered so OpenHIM retries it later
+  if (!modalityMap.isLoaded()) throw new modalityMap.ModalityMapNotLoadedError();
+
   const order = readOrder(await orderBundleFor(input));
   const { serviceRequest } = order;
 
@@ -104,7 +109,7 @@ async function relayServiceRequest(input) {
     orderDetail: [{
       parameter: [{
         code: { coding: [{ system: ADVAPACS_ORDER_DETAIL_PARAMETER_CODE_SYSTEM, code: 'modality' }] },
-        valueString: modalityOf(serviceRequest.code)
+        valueString: modalityOf(serviceRequest.code, serviceRequest.id)
       }, ...clinicalHistoryParameters(note), ...procedureDescriptionParameters(serviceRequest.code)]
     }]
   };
@@ -196,18 +201,28 @@ function withoutSystemlessIdentifiers(identifiers) {
   return identifiers.filter((identifier) => identifier.system);
 }
 
-// The orderable's imaging modality comes from its concept mapping to the DICOM code
-// system (UHM-9634), which OpenMRS sends as one of the ServiceRequest.code codings.
-// Falls back to X-ray ("CR") for orderables without one.
-function modalityOf(code) {
-  const dicomCoding = code && Array.isArray(code.coding) &&
-    code.coding.find((coding) => coding.system === DICOM_CODE_SYSTEM && coding.code);
-  return dicomCoding ? dicomCoding.code : DEFAULT_MODALITY;
+// The orderable's imaging modality, from the mediator's modality map (UHM-9616, see modalityMap.js):
+// looked up by the order's concept, which OpenMRS sends as the ServiceRequest.code coding with no system
+// (the concept uuid). The ServiceRequest's own DICOM coding is deliberately ignored: FHIR2 sends at most
+// one code per source and map type, picked arbitrarily (FM2-710). Falls back to X-ray ("CR"), with a
+// warning, for an orderable that isn't in the map. (Orders aren't relayed at all until it has loaded.)
+function modalityOf(code, serviceRequestId) {
+  const conceptCoding = code && Array.isArray(code.coding) && code.coding.find((coding) => !coding.system && coding.code);
+  const conceptUuid = conceptCoding ? conceptCoding.code : undefined;
+
+  const modality = conceptUuid && modalityMap.modalityFor(conceptUuid);
+  if (modality) return modality;
+
+  logger.warn(`Orderable not in the modality map (no DICOM mapping); sending modality ${DEFAULT_MODALITY}`, {
+    openmrsServiceRequestId: serviceRequestId, conceptUuid
+  });
+  return DEFAULT_MODALITY;
 }
 
-// The DICOM modality coding is sent as AdvaPACS's "modality" parameter instead (see
-// modalityOf), so drop it from code -- it isn't a procedure code, and AdvaPACS only
-// keeps code.concept.coding[0], so it mustn't end up first.
+// Drop any DICOM modality coding from code: it isn't a procedure code, and AdvaPACS only keeps
+// code.concept.coding[0], so it mustn't end up first. (The modality goes in AdvaPACS's "modality"
+// parameter instead, see modalityOf.) Only needed until every site's OpenMRS stops sending it
+// (UHM-9616: pihemr's DCM FHIR concept source removed).
 function withoutDicomCoding(code) {
   if (!code || !Array.isArray(code.coding)) return code;
   return { ...code, coding: code.coding.filter((coding) => coding.system !== DICOM_CODE_SYSTEM) };

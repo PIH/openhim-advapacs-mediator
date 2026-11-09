@@ -44,6 +44,26 @@ describe('POST /fhir/ServiceRequest', () => {
     expect(response.body).toEqual({ status: 'error', message: 'AdvaPACS unreachable' });
   });
 
+  test('answers a retryable error with a failed OpenHIM mediator response, so OpenHIM retries it', async () => {
+    orderRelay.relayServiceRequest.mockRejectedValue(
+      Object.assign(new Error('Modality map not loaded yet'), { retryable: true })
+    );
+
+    const response = await request(app)
+      .post('/fhir/ServiceRequest')
+      .set('X-Mediator-Secret', 'test-inbound-secret')
+      .send({ resourceType: 'ServiceRequest', id: 'sr1' });
+
+    expect(response.status).toBe(503);
+    expect(response.headers['content-type']).toMatch(/^application\/json\+openhim/);
+    const body = JSON.parse(response.text);
+    expect(body['x-mediator-urn']).toBe(require('../../mediatorConfig.json').urn);
+    expect(body.status).toBe('Failed');
+    expect(body.error).toEqual({ message: 'Modality map not loaded yet' });
+    expect(body.response.status).toBe(503);
+    expect(JSON.parse(body.response.body)).toEqual({ status: 'error', message: 'Modality map not loaded yet' });
+  });
+
   test('responds 401 and never calls the relay when X-Mediator-Secret is missing or wrong', async () => {
     const response = await request(app)
       .post('/fhir/ServiceRequest')

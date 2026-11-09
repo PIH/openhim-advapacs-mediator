@@ -1,12 +1,14 @@
 jest.mock('axios');
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../src/lib/openmrsClient');
+jest.mock('../../src/lib/modalityMap');
 
 let axios;
 
 describe('orderPoller', () => {
   let openmrs;
   let orderPoller;
+  let modalityMap;
 
   beforeEach(() => {
     jest.resetModules();
@@ -20,6 +22,8 @@ describe('orderPoller', () => {
 
     axios = require('axios');
     openmrs = require('../../src/lib/openmrsClient');
+    modalityMap = require('../../src/lib/modalityMap');
+    modalityMap.isLoaded.mockReturnValue(true);
     orderPoller = require('../../src/lib/orderPoller');
   });
 
@@ -71,6 +75,18 @@ describe('orderPoller', () => {
     await orderPoller.pollOnce();
 
     expect(axios.post).toHaveBeenCalledTimes(2);
+  });
+
+  test('pollOnce does nothing, and keeps the cursor, while the modality map isn\'t loaded', async () => {
+    openmrs.searchServiceRequests.mockResolvedValue({ resourceType: 'Bundle', entry: [] });
+    modalityMap.isLoaded.mockReturnValue(false);
+
+    await orderPoller.pollOnce();
+    expect(openmrs.searchServiceRequests).not.toHaveBeenCalled();
+
+    modalityMap.isLoaded.mockReturnValue(true);
+    await orderPoller.pollOnce();
+    expect(openmrs.searchServiceRequests).toHaveBeenCalledWith({ lastUpdatedAfter: null });
   });
 
   test('the first pollOnce searches with no lastUpdatedAfter cursor', async () => {

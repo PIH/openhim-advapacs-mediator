@@ -12,6 +12,18 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/fhir+json' }
 });
 
+// OpenMRS's own REST API, for what FHIR2 doesn't expose as needed: a concept's mappings (see
+// getConceptsMappedToSource). With a timeout, so a hung OpenMRS can't hold up the mediator's startup
+// or stop lib/modalityMap.js's refreshes for good
+const restClient = axios.create({
+  baseURL: `${process.env.OPENMRS_BASE_URL}/ws/rest/v1`,
+  auth: {
+    username: process.env.OPENMRS_USERNAME,
+    password: process.env.OPENMRS_PASSWORD
+  },
+  timeout: 30000
+});
+
 /**
  * Fetch a single FHIR resource from OpenMRS by type + id. Not used to relay orders, which arrive
  * with everything they need (see getOrderBundle); used by updateServiceRequestStatus.
@@ -111,10 +123,55 @@ async function getOrderBundle(serviceRequestId) {
   return data;
 }
 
+const CONCEPT_MAPPINGS_REP = 'custom:(uuid,mappings:(conceptReferenceTerm:(code,conceptSource:(uuid,name))))';
+// webservices.rest's usual absolute maximum page size
+const CONCEPT_PAGE_SIZE = 100;
+
+/**
+ * Every non-retired concept with a mapping to a concept source (by name or uuid), with its mappings, as
+ * webservices.rest's concept search by source returns them: once per mapping to the source, so a
+ * concept can appear more than once. Follows every page; rejects if any page fails. Used by
+ * lib/modalityMap.js to load the concept -> DICOM modality table.
+ */
+async function getConceptsMappedToSource(source) {
+  const concepts = [];
+  let startIndex = 0;
+  const seen = new Set([startIndex]);
+  for (;;) {
+    const { data: page } = await restClient.get('/concept', {
+      params: { source, v: CONCEPT_MAPPINGS_REP, limit: CONCEPT_PAGE_SIZE, startIndex }
+    });
+    concepts.push(...(page.results || []));
+
+    const next = nextStartIndex(page);
+    if (next === undefined) return concepts;
+    // A server that keeps linking on past its results would page forever
+    if (!(page.results || []).length) throw new Error(`Concept search page has no results but a next link (startIndex=${next})`);
+    // A next link that repeats would page forever
+    if (seen.has(next)) throw new Error(`Concept search's next link repeats (startIndex=${next})`);
+    seen.add(next);
+    startIndex = next;
+  }
+}
+
+// The startIndex of a REST search page's next link, if it has one. Only its startIndex is used: like
+// FHIR2's, the link can name a host this mediator can't (or shouldn't) reach
+function nextStartIndex(page) {
+  const next = (page.links || []).find((link) => link.rel === 'next');
+  if (!next) return undefined;
+  const queryStart = next.uri ? next.uri.indexOf('?') : -1;
+  const startIndex = queryStart < 0 ? null : new URLSearchParams(next.uri.slice(queryStart + 1)).get('startIndex');
+  if (startIndex === null || !/^\d+$/.test(startIndex)) {
+    throw new Error(`Concept search's next link has no startIndex (${next.uri})`);
+  }
+  return Number(startIndex);
+}
+
 module.exports = {
   getResource,
   createResource,
   updateServiceRequestStatus,
   searchServiceRequests,
-  getOrderBundle
+  getOrderBundle,
+  getConceptsMappedToSource
 };

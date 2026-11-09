@@ -4,10 +4,12 @@ const bodyParser = express.json;
 const logger = require('./lib/logger');
 const openhim = require('./lib/openhimClient');
 const orderPoller = require('./lib/orderPoller');
+const modalityMap = require('./lib/modalityMap');
 const mediatorConfig = require('../mediatorConfig.json');
 const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
+const healthRoute = require('./routes/health');
 // DISABLED (for now): the AdvaPACS result-delivery path (routes/subscriptionWebhook.js
 // + advapacsClient.ensureSubscription below) hasn't been tested at all yet --
 // all effort so far has gone into the outbound order-push path. Commented out
@@ -32,7 +34,8 @@ function startServer() {
     orderPoller.start(Number(process.env.ORDER_POLL_INTERVAL_MS) || 60000);
   }
 
-  app.get('/health', (req, res) => res.status(200).json({ status: 'up' }));
+  // Unhealthy until the modality map has loaded: orders are held (not relayed) until then
+  app.use('/', healthRoute);
 
   const port = process.env.MEDIATOR_PORT || 3500;
   app.listen(port, () => {
@@ -64,10 +67,16 @@ async function registerAndStart() {
   // (idempotent) so a transient admin-API hiccup doesn't crash-loop the
   // whole mediator -- it'll just retry next restart, or can be re-run
   // on demand via `node scripts/setupOpenhim.js`.
-  setupOpenhim()
-    .then(() => logger.info('OpenHIM channels/clients provisioned'))
-    .catch((err) => logger.warn('Failed to provision OpenHIM channels/clients -- continuing startup', { error: err.message }))
-    .finally(() => startServer());
+  //
+  // Also loads the modality map (concept -> DICOM modality, from OpenMRS) before orders start flowing,
+  // and keeps it refreshed. That never fails startup: if OpenMRS isn't up yet it retries in the
+  // background, and orders meanwhile go out as CR (see modalityMap.js).
+  Promise.allSettled([
+    setupOpenhim()
+      .then(() => logger.info('OpenHIM channels/clients provisioned'))
+      .catch((err) => logger.warn('Failed to provision OpenHIM channels/clients -- continuing startup', { error: err.message })),
+    modalityMap.start()
+  ]).finally(() => startServer());
 
   // DISABLED (for now) -- see the commented-out require above. This was
   // also the source of the "Could not confirm AdvaPACS subscription on
