@@ -210,6 +210,21 @@ describe('openmrsClient', () => {
       await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow('500');
     });
 
+    test('rejects a next link back to the first page, without fetching it again', async () => {
+      mockClient.get.mockResolvedValue({ data: { results: [concept('a')], links: nextLink(0) } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/repeats/);
+      expect(mockClient.get).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects an empty page that still has a next link, rather than paging forever', async () => {
+      mockClient.get
+        .mockResolvedValueOnce({ data: { results: [concept('a')], links: nextLink(100) } })
+        .mockResolvedValueOnce({ data: { results: [], links: nextLink(200) } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/no results/);
+    });
+
     test('rejects a next link without a startIndex, rather than skipping the remaining pages', async () => {
       mockClient.get.mockResolvedValue({ data: { results: [concept('a')], links: [{ rel: 'next', uri: '/ws/rest/v1/concept?source=DCM' }] } });
 

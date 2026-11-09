@@ -69,6 +69,15 @@ describe('modalityMap', () => {
       expect(modalityMap.modalityFor('a')).toBe('CT');
     });
 
+    test('matches the source name case-insensitively, as OpenMRS does', async () => {
+      load({ MODALITY_SOURCE: 'dcm' });
+      openmrs.getConceptsMappedToSource.mockResolvedValue([concept('a', mapping('US'))]);
+
+      await modalityMap.load();
+
+      expect(modalityMap.modalityFor('a')).toBe('US');
+    });
+
     test('merges a concept returned more than once and dedupes its codes', async () => {
       const a = concept('a', mapping('CR'), mapping('DX'));
       openmrs.getConceptsMappedToSource.mockResolvedValue([a, a]);
@@ -137,6 +146,12 @@ describe('modalityMap', () => {
   describe('configuration', () => {
     test('throws at load for a non-numeric interval', () => {
       expect(() => load({ MODALITY_MAP_REFRESH_MS: 'soon' })).toThrow(/MODALITY_MAP_REFRESH_MS/);
+    });
+
+    test('throws at load for an interval too long for a Node timer', () => {
+      // Node fires a setTimeout over 2^31-1 ms after 1 ms instead, which would query OpenMRS constantly
+      expect(() => load({ MODALITY_MAP_REFRESH_MS: '2147483648' })).toThrow(/MODALITY_MAP_REFRESH_MS/);
+      expect(() => load({ MODALITY_MAP_REFRESH_MS: '2147483647' })).not.toThrow();
     });
 
     test('treats empty env values as the defaults', async () => {

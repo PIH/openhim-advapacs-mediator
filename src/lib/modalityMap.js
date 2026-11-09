@@ -15,11 +15,14 @@ const openmrs = require('./openmrsClient');
  */
 const MODALITY_SUBSTITUTIONS = { DX: 'CR', RF: 'CR' };
 
+const MAX_TIMER_MS = 2147483647;
+
 function intervalFromEnv(name, defaultMs) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return defaultMs;
-  if (!/^\d+$/.test(raw.trim()) || Number(raw) <= 0) {
-    throw new Error(`${name} must be a positive number of milliseconds, got "${raw}"`);
+  // At most 2^31-1: Node fires a longer setTimeout after 1 ms instead, which would query OpenMRS constantly
+  if (!/^\d+$/.test(raw.trim()) || Number(raw) <= 0 || Number(raw) > MAX_TIMER_MS) {
+    throw new Error(`${name} must be a number of milliseconds from 1 to ${MAX_TIMER_MS}, got "${raw}"`);
   }
   return Number(raw);
 }
@@ -30,6 +33,12 @@ const SOURCE = (process.env.MODALITY_SOURCE || '').trim() || 'DCM';
 const REFRESH_MS = intervalFromEnv('MODALITY_MAP_REFRESH_MS', 60 * 60 * 1000);
 // Short, so orders polled just after OpenMRS comes up aren't sent as CR for long
 const RETRY_MS = intervalFromEnv('MODALITY_MAP_RETRY_MS', 10 * 1000);
+
+// Case-insensitively, as OpenMRS matches the source search (MySQL's default collation)
+function isConfiguredSource(source) {
+  const configured = SOURCE.toLowerCase();
+  return (source.name || '').toLowerCase() === configured || (source.uuid || '').toLowerCase() === configured;
+}
 
 let table = null; // concept uuid -> modality code; null until the first load succeeds
 let timer = null;
@@ -58,7 +67,7 @@ async function load() {
     (concept.mappings || []).forEach((mapping) => {
       const term = mapping.conceptReferenceTerm;
       const source = term && term.conceptSource;
-      if (term && term.code && source && (source.name === SOURCE || source.uuid === SOURCE)) codes.push(term.code);
+      if (term && term.code && source && isConfiguredSource(source)) codes.push(term.code);
     });
     codesByConcept.set(concept.uuid, codes);
   });

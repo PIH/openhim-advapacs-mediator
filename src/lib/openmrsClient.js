@@ -135,8 +135,8 @@ const CONCEPT_PAGE_SIZE = 100;
  */
 async function getConceptsMappedToSource(source) {
   const concepts = [];
-  const seen = new Set();
   let startIndex = 0;
+  const seen = new Set([startIndex]);
   for (;;) {
     const { data: page } = await restClient.get('/concept', {
       params: { source, v: CONCEPT_MAPPINGS_REP, limit: CONCEPT_PAGE_SIZE, startIndex }
@@ -145,6 +145,8 @@ async function getConceptsMappedToSource(source) {
 
     const next = nextStartIndex(page);
     if (next === undefined) return concepts;
+    // A server that keeps linking on past its results would page forever
+    if (!(page.results || []).length) throw new Error(`Concept search page has no results but a next link (startIndex=${next})`);
     // A next link that repeats would page forever
     if (seen.has(next)) throw new Error(`Concept search's next link repeats (startIndex=${next})`);
     seen.add(next);
