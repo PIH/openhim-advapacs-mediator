@@ -164,4 +164,77 @@ describe('openmrsClient', () => {
     ORDER_INCLUDES_QUERY.forEach((include) => expect(query).toContain(include));
     expect(result).toEqual(bundle);
   });
+
+  describe('getConceptsMappedToSource', () => {
+    const CUSTOM_REP = 'custom:(uuid,mappings:(conceptReferenceTerm:(code,conceptSource:(uuid,name))))';
+    const concept = (uuid) => ({ uuid, mappings: [] });
+    const nextLink = (startIndex) => [{ rel: 'next', uri: `https://elsewhere.example/openmrs/ws/rest/v1/concept?source=DCM&startIndex=${startIndex}&limit=100` }];
+
+    test('creates a REST client on OPENMRS_BASE_URL + /ws/rest/v1 with basic auth and a timeout', () => {
+      // A timeout, so a hung OpenMRS can't hold up the mediator's startup or stop the map's refreshes
+      expect(axios.create).toHaveBeenCalledWith({
+        baseURL: 'http://localhost:8080/openmrs/ws/rest/v1',
+        auth: { username: 'admin', password: 'Admin123' },
+        timeout: 30000
+      });
+    });
+
+    test('searches concepts by source with a custom representation', async () => {
+      mockClient.get.mockResolvedValue({ data: { results: [concept('a')] } });
+
+      const result = await openmrs.getConceptsMappedToSource('DCM');
+
+      expect(mockClient.get).toHaveBeenCalledWith('/concept', {
+        params: { source: 'DCM', v: CUSTOM_REP, limit: 100, startIndex: 0 }
+      });
+      expect(result).toEqual([concept('a')]);
+    });
+
+    test('follows next links until there are none', async () => {
+      mockClient.get
+        .mockResolvedValueOnce({ data: { results: [concept('a')], links: nextLink(100) } })
+        .mockResolvedValueOnce({ data: { results: [concept('b')] } });
+
+      const result = await openmrs.getConceptsMappedToSource('DCM');
+
+      expect(result).toEqual([concept('a'), concept('b')]);
+      expect(mockClient.get).toHaveBeenCalledTimes(2);
+      expect(mockClient.get.mock.calls[1][1].params.startIndex).toBe(100);
+    });
+
+    test('rejects when a page fails', async () => {
+      mockClient.get
+        .mockResolvedValueOnce({ data: { results: [concept('a')], links: nextLink(100) } })
+        .mockRejectedValueOnce(new Error('Request failed with status code 500'));
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow('500');
+    });
+
+    test('rejects a next link back to the first page, without fetching it again', async () => {
+      mockClient.get.mockResolvedValue({ data: { results: [concept('a')], links: nextLink(0) } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/repeats/);
+      expect(mockClient.get).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects an empty page that still has a next link, rather than paging forever', async () => {
+      mockClient.get
+        .mockResolvedValueOnce({ data: { results: [concept('a')], links: nextLink(100) } })
+        .mockResolvedValueOnce({ data: { results: [], links: nextLink(200) } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/no results/);
+    });
+
+    test('rejects a next link without a startIndex, rather than skipping the remaining pages', async () => {
+      mockClient.get.mockResolvedValue({ data: { results: [concept('a')], links: [{ rel: 'next', uri: '/ws/rest/v1/concept?source=DCM' }] } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/no startIndex/);
+    });
+
+    test('rejects when the concept search\'s next link repeats', async () => {
+      mockClient.get.mockResolvedValue({ data: { results: [concept('a')], links: nextLink(100) } });
+
+      await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/repeats/);
+    });
+  });
 });

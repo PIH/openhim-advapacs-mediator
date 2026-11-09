@@ -2,11 +2,13 @@ jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), err
 jest.mock('../../src/lib/openmrsClient');
 jest.mock('../../src/lib/advapacsClient');
 jest.mock('../../src/lib/siteLocation');
+jest.mock('../../src/lib/modalityMap');
 
 describe('orderRelay', () => {
   let openmrs;
   let advapacs;
   let siteLocation;
+  let modalityMap;
   let orderRelay;
   let logger;
 
@@ -64,6 +66,9 @@ describe('orderRelay', () => {
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
     siteLocation = require('../../src/lib/siteLocation');
+    modalityMap = require('../../src/lib/modalityMap');
+    modalityMap.modalityFor.mockReturnValue(undefined);
+    modalityMap.isLoaded.mockReturnValue(true);
     orderRelay = require('../../src/lib/orderRelay');
     logger = require('../../src/lib/logger');
   });
@@ -74,10 +79,11 @@ describe('orderRelay', () => {
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
     });
 
-    test('makes no OpenMRS calls for an order Bundle', async () => {
+    test('makes no OpenMRS calls for an order Bundle, including to work out the modality', async () => {
       inBundle(patientWithEmrId);
+      modalityMap.modalityFor.mockReturnValue('US');
 
-      await relay(serviceRequestWithSubject);
+      await relay({ ...serviceRequestWithSubject, code: { coding: [{ code: 'concept-uuid' }] } });
 
       expect(openmrs.getResource).not.toHaveBeenCalled();
       expect(openmrs.getOrderBundle).not.toHaveBeenCalled();
@@ -288,6 +294,8 @@ describe('orderRelay', () => {
       jest.resetModules();
       openmrs = require('../../src/lib/openmrsClient');
       advapacs = require('../../src/lib/advapacsClient');
+      modalityMap = require('../../src/lib/modalityMap');
+      modalityMap.isLoaded.mockReturnValue(true);
       orderRelay = require('../../src/lib/orderRelay');
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
@@ -735,7 +743,7 @@ describe('orderRelay', () => {
     });
   });
 
-  describe('modality on the outbound ServiceRequest, from the orderable\'s DICOM coding (UHM-9445)', () => {
+  describe('modality on the outbound ServiceRequest, from the modality map (UHM-9616)', () => {
     const DICOM_CODE_SYSTEM = 'http://dicom.nema.org/resources/ontology/DCM';
     const modalityOf = (outboundArg) => outboundArg.orderDetail[0].parameter
       .find((parameter) => parameter.code.coding[0].code === 'modality').valueString;
@@ -761,35 +769,79 @@ describe('orderRelay', () => {
       }]);
     });
 
-    test('uses the code of the DICOM coding as the modality', async () => {
+    test('ignores the ServiceRequest\'s DICOM coding', async () => {
+      inBundle(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+      modalityMap.modalityFor.mockReturnValue('US');
+
+      await relay({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ code: 'concept-uuid' }, { system: DICOM_CODE_SYSTEM, code: 'CT' }] }
+      });
+
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(modalityOf(outboundArg)).toBe('US');
+    });
+
+    test('uses the modality map for the order\'s concept (the system-less coding)', async () => {
+      inBundle(patientWithEmrId);
+      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+      modalityMap.modalityFor.mockReturnValue('CT');
+
+      await relay({
+        ...serviceRequestWithSubject,
+        code: { coding: [{ system: 'http://loinc.org', code: '24627-2' }, { code: 'concept-uuid' }] }
+      });
+
+      expect(modalityMap.modalityFor).toHaveBeenCalledWith('concept-uuid');
+      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+      expect(modalityOf(outboundArg)).toBe('CT');
+    });
+
+    test('uses CR, with a warning, when the concept isn\'t in the modality map', async () => {
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
 
       await relay({
         ...serviceRequestWithSubject,
-        code: {
-          coding: [
-            { system: 'http://loinc.org', code: '24627-2' },
-            { system: DICOM_CODE_SYSTEM, code: 'CT' }
-          ]
-        }
+        code: { coding: [{ code: 'concept-uuid' }, { system: DICOM_CODE_SYSTEM, code: 'CT' }] }
       });
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(modalityOf(outboundArg)).toBe('CT');
+      expect(modalityOf(outboundArg)).toBe('CR');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/modality map/),
+        expect.objectContaining({ openmrsServiceRequestId: 'sr1', conceptUuid: 'concept-uuid' }));
+    });
+
+    test('refuses to relay, sending nothing to AdvaPACS, while the modality map isn\'t loaded', async () => {
+      inBundle(patientWithEmrId);
+      modalityMap.isLoaded.mockReturnValue(false);
+      modalityMap.ModalityMapNotLoadedError = class extends Error {
+        constructor() { super('Modality map not loaded yet'); this.retryable = true; }
+      };
+
+      await expect(relay(serviceRequestWithSubject)).rejects.toMatchObject({ retryable: true });
+
+      expect(siteLocation.resolveSite).not.toHaveBeenCalled();
+      expect(advapacs.upsertPatient).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
     });
 
     test('drops the DICOM coding from the outbound code, even when it comes first', async () => {
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
       advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+      modalityMap.modalityFor.mockReturnValue('CR');
 
       await relay({
         ...serviceRequestWithSubject,
         code: {
           coding: [
             { system: DICOM_CODE_SYSTEM, code: 'DX' },
+            { code: 'concept-uuid' },
             { system: 'http://loinc.org', code: '36554-4' },
             { system: 'http://snomed.info/sct', code: '399208008' }
           ],
@@ -798,7 +850,7 @@ describe('orderRelay', () => {
       });
 
       const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(modalityOf(outboundArg)).toBe('DX');
+      expect(modalityOf(outboundArg)).toBe('CR');
       expect(outboundArg.code.concept.coding).toEqual([
         { system: 'http://loinc.org', code: '36554-4' },
         { system: 'http://snomed.info/sct', code: '399208008' }

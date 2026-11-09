@@ -139,13 +139,23 @@ they need your actual data model, not boilerplate:
   to the OpenMRS data needs the order re-sent, e.g. as
   `{ "serviceRequestId": "<uuid>" }`). With `ADVAPACS_SITE_MAP` unset, no
   location is sent.
+- **The imaging modality comes from the mediator's modality map** (UHM-9616,
+  `modalityMap.js`): a table of OpenMRS concept uuid -> DICOM modality code,
+  built from the concepts' mappings to the DCM concept source, which is
+  loaded from OpenMRS's REST API (`concept?source=DCM`) at startup and
+  refreshed hourly, so relaying an order makes no OpenMRS call. DX and RF
+  are sent as CR (`MODALITY_SUBSTITUTIONS`, not configurable). The
+  ServiceRequest's own DICOM coding is ignored (FHIR2 sends at most one,
+  picked arbitrarily: FM2-710). An orderable that isn't in the map goes out
+  as `CR` with a warning. Until the map has first loaded (or if it loads
+  empty), orders are held, not sent: the poller doesn't poll, the relay
+  answers with a failed OpenHIM mediator response, which the inbound
+  channel auto-retries every minute for up to 30 attempts, and `/health`
+  answers 503.
 - **Several other fields are temporarily hardcoded or reshaped** just to get
   a `ServiceRequest` past AdvaPACS's validation — accession-number
   identifier duplication (UHM-9437/9439/9440), an HL7 "PI" coding stamped
-  onto the patient's EMR-ID identifier (UHM-9443), and the imaging modality
-  defaulting to X-ray/`CR` when the orderable has no DICOM
-  (`http://dicom.nema.org/resources/ontology/DCM`) coding to take it from
-  (UHM-9445, UHM-9634). See the `TODO`/`HACK`/`EXPERIMENT` comments in `orderRelay.js` for the
+  onto the patient's EMR-ID identifier (UHM-9443). See the `TODO`/`HACK`/`EXPERIMENT` comments in `orderRelay.js` for the
   reasoning and ticket numbers behind each.
 
 ## Known limitations
@@ -404,9 +414,9 @@ npm test
 Unit tests only — every HTTP call (to OpenMRS, AdvaPACS/OpenHIM's outbound
 channel) is mocked with Jest, so nothing needs to be running: no Docker, no
 OpenHIM, no OpenMRS. Covers `orderRelay.js`, `advapacsClient.js`,
-`openmrsClient.js`, `orderPoller.js`, `routes/serviceRequest.js`,
-`routes/advapacsWebhook.js` and `scripts/setupOpenhim.js`'s Clients and
-channels. Does **not** cover `src/index.js`'s route-mounting/ingestion-mode
+`openmrsClient.js`, `orderPoller.js`, `modalityMap.js`, `routes/serviceRequest.js`,
+`routes/health.js`, `routes/advapacsWebhook.js` and `scripts/setupOpenhim.js`'s
+Clients and channels. Does **not** cover `src/index.js`'s route-mounting/ingestion-mode
 logic (no testable seam without a refactor) — see
 `docs/superpowers/specs/2026-08-06-test-suite-design.md` for why.
 

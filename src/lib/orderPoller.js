@@ -2,6 +2,7 @@ const axios = require('axios');
 const logger = require('./logger');
 const openmrs = require('./openmrsClient');
 const { splitOrders } = require('./orderBundle');
+const modalityMap = require('./modalityMap');
 
 let lastPolledAt = null;
 let timer = null;
@@ -27,6 +28,10 @@ let timer = null;
  * in-process. A re-run replays the order as it was polled.
  */
 async function pollOnce() {
+  // Orders aren't relayed until the modality map has loaded (see orderRelay.js), so don't fetch them
+  // yet either: the cursor stays put, and the first poll after it loads covers everything since
+  if (!modalityMap.isLoaded()) return;
+
   const since = lastPolledAt;
   const polledAt = new Date().toISOString();
 

@@ -37,7 +37,10 @@
       "allow": ["openmrs"],
       "authType": "private",
       "methods": ["POST"],
-      "type": "http"
+      "type": "http",
+      "autoRetryEnabled": true,
+      "autoRetryPeriodMinutes": 1,
+      "autoRetryMaxAttempts": 30
     },
     {
       "name": "Mediator to AdvaPACS Order Push",

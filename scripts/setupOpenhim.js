@@ -128,7 +128,10 @@ async function upsertChannel(channelDef) {
   // failures/timeouts talking to the route host -- OpenHIM does NOT retry a
   // 4xx/5xx *response* from AdvaPACS itself (that only auto-retries when the
   // response is shaped like OpenHIM's own mediator-error envelope, which a
-  // plain external FHIR API won't send). A real AdvaPACS error today just
+  // plain external FHIR API won't send). The inbound channel's auto-retry does
+  // work for this mediator's own retryable failures (e.g. an order arriving
+  // before the modality map has loaded), which routes/serviceRequest.js answers
+  // with that envelope (UHM-9616). A real AdvaPACS error today just
   // surfaces as a normal failed transaction with no further retry or
   // alerting -- see the comment above advapacsClient.js's createServiceRequest.
   const { data: existing } = await api.get('/channels');
