@@ -33,7 +33,10 @@ function startServer() {
     orderPoller.start(Number(process.env.ORDER_POLL_INTERVAL_MS) || 60000);
   }
 
-  app.get('/health', (req, res) => res.status(200).json({ status: 'up' }));
+  // Unhealthy until the modality map has loaded: orders are held (not relayed) until then
+  app.get('/health', (req, res) => (modalityMap.isLoaded()
+    ? res.status(200).json({ status: 'up' })
+    : res.status(503).json({ status: 'modality map not loaded' })));
 
   const port = process.env.MEDIATOR_PORT || 3500;
   app.listen(port, () => {

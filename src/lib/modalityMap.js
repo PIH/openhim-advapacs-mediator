@@ -5,7 +5,8 @@ const openmrs = require('./openmrsClient');
 // this table of OpenMRS concept uuid -> DICOM modality code, built from the concepts' mappings to the
 // DICOM (DCM) concept source (UHM-9616). It's loaded from OpenMRS's REST API at startup and refreshed
 // periodically, so relaying an order makes no OpenMRS call. The ServiceRequest's own DICOM coding isn't
-// used: FHIR2 sends at most one code per source and map type, picked arbitrarily (FM2-710).
+// used: FHIR2 sends at most one code per source and map type, picked arbitrarily (FM2-710). Until the
+// table has first loaded, orders are held (see ModalityMapNotLoadedError), not sent.
 
 /**
  * DICOM modality codes sent to AdvaPACS as another code. Not configurable yet: change it here.
@@ -78,13 +79,14 @@ async function load() {
     if (modality) loaded.set(uuid, modality);
   });
 
-  table = loaded;
+  // An empty table is a failure, not a load: likely a wrong MODALITY_SOURCE, or a dictionary without the
+  // mappings. Orders are held rather than all sent as CR
   if (loaded.size === 0) {
-    // Every order will go out as CR: likely a wrong MODALITY_SOURCE, or a dictionary without the mappings
-    logger.warn('Loaded modality map, but it has no concepts: every order will be sent as CR', { source: SOURCE });
-  } else {
-    logger.info('Loaded modality map', { concepts: loaded.size, source: SOURCE });
+    throw new Error(`The modality map has no concepts: none have a mapping to concept source "${SOURCE}"`);
   }
+
+  table = loaded;
+  logger.info('Loaded modality map', { concepts: loaded.size, source: SOURCE });
   return loaded.size;
 }
 
@@ -96,7 +98,7 @@ async function attempt() {
     await load();
   } catch (err) {
     delay = RETRY_MS;
-    logger.warn('Failed to load modality map', { error: err.message, retryInMs: delay });
+    logger.error('Failed to load modality map', { error: err.message, retryInMs: delay, loaded: isLoaded() });
   }
   if (!stopped) timer = setTimeout(attempt, delay);
 }
@@ -116,6 +118,19 @@ function stop() {
   timer = null;
 }
 
+/**
+ * Thrown by the relay for an order that arrives before the map has first loaded. Retryable: the order is
+ * held (answered with a failed OpenHIM mediator response, which OpenHIM auto-retries, see
+ * routes/serviceRequest.js) rather than sent with a guessed modality.
+ */
+class ModalityMapNotLoadedError extends Error {
+  constructor() {
+    super('Modality map not loaded yet; holding the order until it is');
+    this.name = 'ModalityMapNotLoadedError';
+    this.retryable = true;
+  }
+}
+
 /** The modality for a concept, or undefined if it isn't in the table or the table hasn't loaded yet. */
 function modalityFor(conceptUuid) {
   return table ? table.get(conceptUuid) : undefined;
@@ -127,6 +142,7 @@ function isLoaded() {
 
 module.exports = {
   MODALITY_SUBSTITUTIONS,
+  ModalityMapNotLoadedError,
   chooseModality,
   load,
   start,

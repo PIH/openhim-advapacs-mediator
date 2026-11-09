@@ -294,6 +294,8 @@ describe('orderRelay', () => {
       jest.resetModules();
       openmrs = require('../../src/lib/openmrsClient');
       advapacs = require('../../src/lib/advapacsClient');
+      modalityMap = require('../../src/lib/modalityMap');
+      modalityMap.isLoaded.mockReturnValue(true);
       orderRelay = require('../../src/lib/orderRelay');
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
@@ -814,20 +816,18 @@ describe('orderRelay', () => {
         expect.objectContaining({ openmrsServiceRequestId: 'sr1', conceptUuid: 'concept-uuid' }));
     });
 
-    test('uses CR, warning that the map isn\'t loaded, when it hasn\'t loaded yet', async () => {
+    test('refuses to relay, sending nothing to AdvaPACS, while the modality map isn\'t loaded', async () => {
       inBundle(patientWithEmrId);
-      advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
-      advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
       modalityMap.isLoaded.mockReturnValue(false);
+      modalityMap.ModalityMapNotLoadedError = class extends Error {
+        constructor() { super('Modality map not loaded yet'); this.retryable = true; }
+      };
 
-      await relay({
-        ...serviceRequestWithSubject,
-        code: { coding: [{ code: 'concept-uuid' }, { system: DICOM_CODE_SYSTEM, code: 'CT' }] }
-      });
+      await expect(relay(serviceRequestWithSubject)).rejects.toMatchObject({ retryable: true });
 
-      const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
-      expect(modalityOf(outboundArg)).toBe('CR');
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/not loaded/), expect.anything());
+      expect(siteLocation.resolveSite).not.toHaveBeenCalled();
+      expect(advapacs.upsertPatient).not.toHaveBeenCalled();
+      expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
     });
 
     test('drops the DICOM coding from the outbound code, even when it comes first', async () => {

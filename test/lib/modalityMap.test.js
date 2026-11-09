@@ -86,13 +86,23 @@ describe('modalityMap', () => {
       expect(modalityMap.modalityFor('a')).toBe('CR');
     });
 
-    test('warns when a load finds no concepts (e.g. a wrong MODALITY_SOURCE)', async () => {
-      const logger = require('../../src/lib/logger');
+    test('an empty load fails, leaving the map unloaded (e.g. a wrong MODALITY_SOURCE)', async () => {
       openmrs.getConceptsMappedToSource.mockResolvedValue([]);
 
-      await expect(modalityMap.load()).resolves.toBe(0);
+      await expect(modalityMap.load()).rejects.toThrow(/no concepts/);
 
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no concepts/), expect.objectContaining({ source: 'DCM' }));
+      expect(modalityMap.isLoaded()).toBe(false);
+    });
+
+    test('an empty refresh keeps the previous table', async () => {
+      openmrs.getConceptsMappedToSource
+        .mockResolvedValueOnce([concept('a', mapping('US'))])
+        .mockResolvedValueOnce([]);
+
+      await modalityMap.load();
+      await expect(modalityMap.load()).rejects.toThrow(/no concepts/);
+
+      expect(modalityMap.modalityFor('a')).toBe('US');
     });
 
     test('is empty until loaded', () => {
@@ -133,6 +143,24 @@ describe('modalityMap', () => {
 
       await jest.advanceTimersByTimeAsync(1);
       expect(openmrs.getConceptsMappedToSource).toHaveBeenCalledTimes(3);
+    });
+
+    test('logs an error on every failed attempt', async () => {
+      const logger = require('../../src/lib/logger');
+      jest.useFakeTimers();
+      openmrs.getConceptsMappedToSource.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await modalityMap.start();
+      await jest.advanceTimersByTimeAsync(10000);
+
+      expect(logger.error).toHaveBeenCalledTimes(2);
+      expect(logger.error).toHaveBeenCalledWith('Failed to load modality map', expect.objectContaining({ error: 'ECONNREFUSED' }));
+    });
+
+    test('ModalityMapNotLoadedError is retryable', () => {
+      const err = new modalityMap.ModalityMapNotLoadedError();
+      expect(err).toBeInstanceOf(Error);
+      expect(err.retryable).toBe(true);
     });
 
     test('start never rejects', async () => {

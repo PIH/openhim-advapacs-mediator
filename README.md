@@ -113,8 +113,12 @@ they need your actual data model, not boilerplate:
   refreshed hourly, so relaying an order makes no OpenMRS call. DX and RF
   are sent as CR (`MODALITY_SUBSTITUTIONS`, not configurable). The
   ServiceRequest's own DICOM coding is ignored (FHIR2 sends at most one,
-  picked arbitrarily: FM2-710). An orderable that isn't in the map, or an
-  order relayed before the map has loaded, goes out as `CR` with a warning.
+  picked arbitrarily: FM2-710). An orderable that isn't in the map goes out
+  as `CR` with a warning. Until the map has first loaded (or if it loads
+  empty), orders are held, not sent: the poller doesn't poll, the relay
+  answers with a failed OpenHIM mediator response, which the inbound
+  channel auto-retries every minute for up to 30 attempts, and `/health`
+  answers 503.
 - **Several other fields are temporarily hardcoded or reshaped** just to get
   a `ServiceRequest` past AdvaPACS's validation — accession-number
   identifier duplication (UHM-9437/9439/9440), an HL7 "PI" coding stamped

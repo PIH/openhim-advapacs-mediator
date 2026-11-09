@@ -28,6 +28,10 @@ const DEFAULT_MODALITY = 'CR';
  * - a minimal { serviceRequestId }, for which the order Bundle is fetched in one OpenMRS request.
  */
 async function relayServiceRequest(input) {
+  // Hold every order until the modality map has loaded, rather than send one with a guessed modality.
+  // First, so nothing at all reaches AdvaPACS; the caller is answered so OpenHIM retries it later
+  if (!modalityMap.isLoaded()) throw new modalityMap.ModalityMapNotLoadedError();
+
   const order = readOrder(await orderBundleFor(input));
   const { serviceRequest } = order;
 
@@ -201,17 +205,10 @@ function withoutSystemlessIdentifiers(identifiers) {
 // looked up by the order's concept, which OpenMRS sends as the ServiceRequest.code coding with no system
 // (the concept uuid). The ServiceRequest's own DICOM coding is deliberately ignored: FHIR2 sends at most
 // one code per source and map type, picked arbitrarily (FM2-710). Falls back to X-ray ("CR"), with a
-// warning, for an orderable that isn't in the map, or while the map hasn't loaded yet.
+// warning, for an orderable that isn't in the map. (Orders aren't relayed at all until it has loaded.)
 function modalityOf(code, serviceRequestId) {
   const conceptCoding = code && Array.isArray(code.coding) && code.coding.find((coding) => !coding.system && coding.code);
   const conceptUuid = conceptCoding ? conceptCoding.code : undefined;
-
-  if (!modalityMap.isLoaded()) {
-    logger.warn(`Modality map not loaded yet; sending modality ${DEFAULT_MODALITY}`, {
-      openmrsServiceRequestId: serviceRequestId, conceptUuid
-    });
-    return DEFAULT_MODALITY;
-  }
 
   const modality = conceptUuid && modalityMap.modalityFor(conceptUuid);
   if (modality) return modality;
