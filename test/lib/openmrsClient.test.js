@@ -170,10 +170,12 @@ describe('openmrsClient', () => {
     const concept = (uuid) => ({ uuid, mappings: [] });
     const nextLink = (startIndex) => [{ rel: 'next', uri: `https://elsewhere.example/openmrs/ws/rest/v1/concept?source=DCM&startIndex=${startIndex}&limit=100` }];
 
-    test('creates a REST client on OPENMRS_BASE_URL + /ws/rest/v1 with basic auth', () => {
+    test('creates a REST client on OPENMRS_BASE_URL + /ws/rest/v1 with basic auth and a timeout', () => {
+      // A timeout, so a hung OpenMRS can't hold up the mediator's startup or stop the map's refreshes
       expect(axios.create).toHaveBeenCalledWith({
         baseURL: 'http://localhost:8080/openmrs/ws/rest/v1',
-        auth: { username: 'admin', password: 'Admin123' }
+        auth: { username: 'admin', password: 'Admin123' },
+        timeout: 30000
       });
     });
 

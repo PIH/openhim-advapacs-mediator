@@ -13,13 +13,15 @@ const client = axios.create({
 });
 
 // OpenMRS's own REST API, for what FHIR2 doesn't expose as needed: a concept's mappings (see
-// getConceptsMappedToSource)
+// getConceptsMappedToSource). With a timeout, so a hung OpenMRS can't hold up the mediator's startup
+// or stop lib/modalityMap.js's refreshes for good
 const restClient = axios.create({
   baseURL: `${process.env.OPENMRS_BASE_URL}/ws/rest/v1`,
   auth: {
     username: process.env.OPENMRS_USERNAME,
     password: process.env.OPENMRS_PASSWORD
-  }
+  },
+  timeout: 30000
 });
 
 /**

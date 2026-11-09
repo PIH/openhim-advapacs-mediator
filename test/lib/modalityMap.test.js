@@ -77,6 +77,15 @@ describe('modalityMap', () => {
       expect(modalityMap.modalityFor('a')).toBe('CR');
     });
 
+    test('warns when a load finds no concepts (e.g. a wrong MODALITY_SOURCE)', async () => {
+      const logger = require('../../src/lib/logger');
+      openmrs.getConceptsMappedToSource.mockResolvedValue([]);
+
+      await expect(modalityMap.load()).resolves.toBe(0);
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no concepts/), expect.objectContaining({ source: 'DCM' }));
+    });
+
     test('is empty until loaded', () => {
       expect(modalityMap.isLoaded()).toBe(false);
       expect(modalityMap.modalityFor('x')).toBeUndefined();
@@ -138,7 +147,8 @@ describe('modalityMap', () => {
       await modalityMap.start();
       expect(openmrs.getConceptsMappedToSource).toHaveBeenCalledWith('DCM');
 
-      await jest.advanceTimersByTimeAsync(59999);
+      // Retries every 10 s by default, so orders polled just after OpenMRS comes up aren't sent as CR for long
+      await jest.advanceTimersByTimeAsync(9999);
       expect(openmrs.getConceptsMappedToSource).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(1);
       expect(openmrs.getConceptsMappedToSource).toHaveBeenCalledTimes(2);

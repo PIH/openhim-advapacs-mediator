@@ -28,7 +28,8 @@ function intervalFromEnv(name, defaultMs) {
 // The concept source is matched by name or uuid
 const SOURCE = (process.env.MODALITY_SOURCE || '').trim() || 'DCM';
 const REFRESH_MS = intervalFromEnv('MODALITY_MAP_REFRESH_MS', 60 * 60 * 1000);
-const RETRY_MS = intervalFromEnv('MODALITY_MAP_RETRY_MS', 60 * 1000);
+// Short, so orders polled just after OpenMRS comes up aren't sent as CR for long
+const RETRY_MS = intervalFromEnv('MODALITY_MAP_RETRY_MS', 10 * 1000);
 
 let table = null; // concept uuid -> modality code; null until the first load succeeds
 let timer = null;
@@ -69,7 +70,12 @@ async function load() {
   });
 
   table = loaded;
-  logger.info('Loaded modality map', { concepts: loaded.size, source: SOURCE });
+  if (loaded.size === 0) {
+    // Every order will go out as CR: likely a wrong MODALITY_SOURCE, or a dictionary without the mappings
+    logger.warn('Loaded modality map, but it has no concepts: every order will be sent as CR', { source: SOURCE });
+  } else {
+    logger.info('Loaded modality map', { concepts: loaded.size, source: SOURCE });
+  }
   return loaded.size;
 }
 
