@@ -38,10 +38,15 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, (req, res) => {
   const event = req.body || {};
   const data = event.data || {};
   if (!event.eventType || !data.id) {
-    logger.warn('Rejected AdvaPACS webhook event without an eventType and data.id', {
-      fields: Object.keys(event)
+    // AdvaPACS's own webhook test (Configuration > Webhooks) sends an event like this, and rejects the
+    // webhook ("Invalid webhook response", 27108) unless it gets a 2xx. So acknowledge it, and log
+    // which fields it had (names only) so the shape can be seen.
+    logger.warn('Received AdvaPACS webhook event without an eventType and data.id (e.g. a test event)', {
+      fields: Object.keys(event),
+      dataFields: data && typeof data === 'object' ? Object.keys(data) : [],
+      hasEventType: Boolean(event.eventType)
     });
-    return res.status(400).json({ status: 'error', message: 'expected an eventType and data.id' });
+    return res.status(200).json({ status: 'ok' });
   }
 
   logger.info('Received AdvaPACS webhook event', {

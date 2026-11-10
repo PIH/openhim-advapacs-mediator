@@ -94,7 +94,9 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
 - **Logging.** Each event is logged with its type, id, timestamp and the
   resource reference. Fields the docs don't describe are logged by name only,
   so nothing unexpected (e.g. patient details) reaches the logs. An event
-  without an `eventType` and `data.id` gets a 400.
+  without an `eventType` and `data.id`, like the one AdvaPACS's webhook
+  test sends, still gets a 200 (AdvaPACS rejects the webhook otherwise) and is
+  logged as a warning, with its field names only.
 
 ## Upgrading to the single-request poll
 

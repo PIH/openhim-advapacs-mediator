@@ -85,14 +85,30 @@ describe('POST /webhooks/advapacs', () => {
     ['no eventType', { ...EVENT, eventType: undefined }],
     ['no data', { ...EVENT, data: undefined }],
     ['no data.id', { ...EVENT, data: { type: 'report' } }]
-  ])('responds 400 for an event with %s', async (_label, body) => {
+  ])('acknowledges (200) but only warns about an event with %s, as AdvaPACS\'s webhook test sends', async (_label, body) => {
     const response = await request(app)
       .post('/webhooks/advapacs')
       .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
       .send(body);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('logs only the names of an incomplete event\'s fields, not their values', async () => {
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType: '', data: { type: 'study', accession: '0000010496' } });
+
+    const [, logged] = logger.warn.mock.calls[0];
+    expect(logged).toEqual({
+      fields: ['timestamp', 'eventId', 'eventType', 'data'],
+      dataFields: ['type', 'accession'],
+      hasEventType: false
+    });
+    expect(JSON.stringify(logged)).not.toContain('0000010496');
   });
 
   test('logs the names, but not the values, of fields the docs don\'t describe', async () => {
