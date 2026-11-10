@@ -1,0 +1,333 @@
+# AdvaPACS results to OpenMRS: Radiology Study and Radiology Report encounters
+
+Date: 2026-11-10. Jira: LSO-209 (this work), UHM-9458 / UHM-9459 (webhook receiver), LSO-245 (provider
+identifier).
+
+## Intent
+
+Radiology orders already flow from OpenMRS to AdvaPACS through this mediator. Nothing comes back yet:
+the AdvaPACS webhook reaches the mediator (`POST /webhooks/advapacs`, through OpenHIM) and is only
+logged. This work closes the loop, so a clinician in OpenMRS sees that a study was performed and can
+read the signed radiology report, using the encounters OpenMRS's **radiologyapp** module already
+shows on the patient dashboard and radiology section.
+
+Two repos change:
+
+- **`openmrs/openmrs-module-radiologyapp`**: a small REST endpoint to create studies and reports.
+- **`PIH/openhim-advapacs-mediator`** (this repo): turn webhook events into calls to that endpoint.
+
+## Goals
+
+- `STUDY_CREATED` → one **Radiology Study** encounter for the order.
+- A report signed as `final` → one **Radiology Report** encounter of type *final*.
+- A report `amended` or `corrected` → a new Radiology Report encounter of type *correction*.
+- Repeated or out-of-order webhooks never create duplicates.
+- Every write to OpenMRS can be traced (mediator log, OpenHIM transaction, OpenMRS log).
+- The mediator reaches OpenMRS only through a new OpenHIM channel, including the existing order
+  poller (see "The mediator → OpenMRS channel").
+
+## Non-goals (not in this first version)
+
+Tracked so they can be picked up later:
+
+1. **Preliminary reports** (`DiagnosticReport.status = preliminary`): ignored. Open question for the
+   PIH team: should they go to OpenMRS?
+2. **HTML reports**: `presentedForm` is treated as plain text. If its `contentType` isn't
+   `text/plain`, log a warning (content type only) and still save the decoded text. Revisit once a
+   real HTML report is seen.
+3. **Radiologist matching by anything but an identifier.** See "Radiologist" below. Real fix:
+   a provider identifier (LSO-245).
+4. **`STUDY_UPDATED`** events: ignored.
+5. **Draft (`partial`), `registered`, `unknown`, `cancelled`, `entered-in-error`** reports: ignored.
+6. **Lost events.** Unknown whether AdvaPACS retries a failed webhook. Open question for the
+   AdvaPACS vendor: do they retry, how often, for how long? If not, events that arrive during an
+   OpenMRS/OpenHIM outage are lost; no catch-up poll is built in this version.
+7. **Number of images.** radiologyapp's study model has *Radiology images available* (yes/no) but
+   no count. Future task: consider adding a "number of images" concept to the *Radiology study
+   construct*, filled from `ImagingStudy.numberOfInstances`.
+8. **Location other than the unknown location.** Studies and reports always use the unknown
+   location in this version (see anti-goals). Future task: work out where the performed location
+   could come from (e.g. AdvaPACS Site, modality/device, or a mapping table) and record it.
+9. **Technician and radiologist other than by provider-UUID identifier.** Both are matched only via
+   the OpenMRS provider-UUID identifier on the AdvaPACS Practitioner; otherwise the unknown provider.
+   Future task: make these real providers in practice (a provider identifier, LSO-245, and AdvaPACS
+   users linked to OpenMRS providers).
+10. **One study per order.** radiologyapp allows exactly one Radiology Study per order number and has
+    no update. Future task: review whether that model fits AdvaPACS (repeat acquisitions, a study
+    split or merged in the PACS, more images added later, `STUDY_UPDATED`) and whether radiologyapp
+    should change.
+11. **Duplicate accession numbers.** Accession numbers are plain OpenMRS order numbers, which can
+    repeat across OpenMRS servers sharing the AdvaPACS tenant. Future task: make sure duplicates are
+    handled properly, e.g. by checking the accession identifier's `system` (its assigning
+    authority) as well as its value. To confirm on kol-ci: does AdvaPACS return the `system` (and/or
+    an `assigner`) on the ImagingStudy / ServiceRequest accession identifier? The IMLADRIS lab shows
+    AdvaPACS emitting a `system` URI per configured NamingSystem, so it likely does, but this
+    mediator sends the same `system` from every Lesotho server
+    (`http://www.pih.org/identifiers/lesotho/radiology-accession-number`), so today it wouldn't tell
+    sites apart. The patient check below is this version's guard.
+
+## Anti-goals (would make this a failure even if it "works")
+
+- **Filing a study or report against the wrong patient** (e.g. another site's study with a matching
+  accession number).
+- **Attributing a report to the wrong clinician.** Never match radiologists by name.
+- **Recording the ordering location as the place the study was performed.**
+- **Duplicate studies or repeated final reports** in the patient record.
+- **Patient details in logs.** Keep the existing rule: log resource ids, types, statuses and field
+  *names*, never values such as names or report text.
+
+## What we know
+
+### Webhook events (observed on kol-ci, 2026-11-10)
+
+Events carry only a reference: `{ timestamp, eventId, eventType, data: { type, id } }`. One full
+order → study → report workflow produced, in order:
+
+| Event | `data.type` | Notes |
+|---|---|---|
+| `STUDY_CREATED` | `study` | the ImagingStudy id |
+| `REPORT_CREATED` | `report` | the DiagnosticReport id |
+| `REPORT_UPDATED` ×3 | `report` | same id; one per report transition |
+
+In that run the order reached AdvaPACS at 21:19:50 UTC and `STUDY_CREATED` came at 21:21:19, after
+acquisition, so the study appears to be created when images arrive (to confirm; see the study guard
+below).
+
+AdvaPACS's webhook test sends `eventType: TEST_EVENT` with `data: {}` (already acknowledged with a
+200, PR #18). The status that tells report events apart is only in the resource, so each event needs
+a FHIR read from AdvaPACS.
+
+### AdvaPACS FHIR resources (from the IMLADRIS lab, `jwalbers/imladris`; to confirm on kol-ci)
+
+- **ImagingStudy**: `identifier` includes the accession (type `ACSN`), which this mediator sets to the
+  OpenMRS **order number**. `started` is when it was performed. `numberOfSeries` /
+  `numberOfInstances` / `series` describe the images.
+- **DiagnosticReport**: `status` (FHIR R5 codes); `basedOn` → ServiceRequest, `study` →
+  ImagingStudy; `issued`; `resultsInterpreter` / `performer` → Practitioner; report text in
+  `presentedForm[].data` (base64, `contentType` text/plain or text/html), **only returned on a
+  single-resource read**, not in searches.
+- AdvaPACS report statuses observed in the lab: `partial` (draft), `preliminary`, `final` (signed),
+  `amended`, `cancelled`. Each transition fires a `REPORT_UPDATED`, including ones that don't change
+  `status`.
+- The lab's findings are a reference, not a spec: confirm field presence on kol-ci before relying on it.
+
+### radiologyapp (`openmrs-module-radiologyapp`)
+
+- **Study encounter** (`saveRadiologyStudy`): encounter type GP `emr.radiologyStudyEncounterType`;
+  date = date performed; location (defaults to the unknown location); technician role (defaults to
+  the unknown provider); obs group *Radiology study construct* with *Radiology accession number*
+  (= order number), *Radiology procedure performed*, *Radiology images available*. The obs group is
+  linked to the order. Validation: order number, date and patient required; **rejects a second study
+  for the same order number**.
+- **Report encounter** (`saveRadiologyReport`): encounter type GP `emr.radiologyReportEncounterType`;
+  date = report date; location; principal results interpreter role; obs group *Radiology report
+  construct* with accession number, *Radiology report comments* (text), *Type of radiology report*
+  (*preliminary* / *final* / *correction*) and procedure. Several reports per order allowed.
+- Lookups exist: `getRadiologyOrderByOrderNumber`, `getRadiologyStudyByOrderNumber`,
+  `getRadiologyReportsByOrderNumber`. `getRadiologyOrderByOrderNumber` only returns a `TestOrder` of
+  the order type in GP `emr.radiologyTestOrderType`. kol-ci's orders are placed from radiologyapp's
+  Radiology section, so they should have that type; confirm on kol-ci, since otherwise every event
+  would quietly become "no matching order".
+- **No REST API at all today**; only the Java service.
+
+## Decisions
+
+### Event → OpenMRS mapping
+
+| Event | Mediator action |
+|---|---|
+| `STUDY_CREATED` | Read the ImagingStudy; create a Radiology Study. |
+| `REPORT_CREATED` / `REPORT_UPDATED` | Read the DiagnosticReport; act on `status`: |
+| → `final` | Create a Radiology Report, type *final*. |
+| → `amended`, `corrected` | Create a Radiology Report, type *correction*. |
+| → anything else | Ignore (log at info: event, report id, status). |
+| `TEST_EVENT`, other types, incomplete events | Acknowledge and log as today. |
+
+**Study fields**
+
+- Order, patient, procedure: found by radiologyapp from the accession number (order number).
+- Date performed: `ImagingStudy.started`.
+- Images available: `numberOfInstances` > 0 → yes; 0 → no; absent → not set. Confirm on a real
+  kol-ci ImagingStudy which of these fields AdvaPACS fills.
+- Location: **always the unknown location.** The order's location is where it was ordered, not
+  where it was performed.
+- Technician: an OpenMRS provider only if found the same way as the radiologist (see "Radiologist
+  and technician"): the Practitioner in `ImagingStudy.series[].performer[]` carries the OpenMRS
+  provider-UUID identifier and that provider exists. Otherwise the unknown provider. Never by name.
+  Whether AdvaPACS fills `series.performer` at all is unknown (DICOM only carries operator *names*);
+  confirm on kol-ci. If there are several matching performers, use none (unknown provider) rather
+  than guess.
+- **Guard** *(my call)*: radiologyapp allows only one study per order and has no update, so the first
+  write is final. If the ImagingStudy has no `started`, or reports 0 instances, don't create the
+  study; log it and acknowledge. A later report will create the study (see "Missing study when a
+  report arrives"). This matters only if `STUDY_CREATED` turns out to fire before images arrive.
+
+**Report fields**
+
+- Order, patient, procedure: from the accession number, as above.
+- Accession number: from the report's ImagingStudy (`study`) or ServiceRequest (`basedOn`)
+  identifier.
+- Report date: `issued`.
+- Report text: decoded `presentedForm` (plain text; see non-goal 2).
+- Report type: *final* or *correction*, from `status`.
+- Location: always the unknown location.
+- Radiologist: see below.
+
+**A final report never changes** (assumption agreed for this version). Once an order has a *final*
+report, further `final` events for it are repeats and are ignored. Changes after signing come as
+`amended`/`corrected` and become *correction* reports.
+
+### Radiologist and technician
+
+The same rule for both (technician: from the ImagingStudy; radiologist: from the DiagnosticReport).
+Use an OpenMRS provider only when the Practitioner carries the OpenMRS provider-UUID
+identifier (`ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM`, on kol-ci
+`http://www.pih.org/identifiers/lesotho/provider-uuid`), the identifier this mediator already puts
+on ordering providers, and an OpenMRS provider with that UUID exists. Otherwise the unknown provider.
+**Never match by name.** AdvaPACS radiologists and technicians are AdvaPACS users and probably won't
+carry that identifier; a provider identifier (LSO-245) is the real fix (non-goal 9). The code should
+still support the match, so it can be tested with a user who has an OpenMRS provider account.
+
+### Patient check (shared AdvaPACS tenant)
+
+Accession numbers are plain OpenMRS order numbers with no site prefix, and several OpenMRS servers
+(kol-ci, the IMLADRIS lab, later production sites) share one AdvaPACS tenant, so another site's study
+can carry an accession that matches a *local* order. Before writing anything, check that the AdvaPACS
+patient matches the order's patient: the ImagingStudy's (or report's) `subject` → AdvaPACS Patient →
+its identifier in this mediator's patient identifier system (`PATIENT_IDENTIFIER_SYSTEM`, the Lesotho
+EMR ID), compared with the order's patient's identifier of that type. On a mismatch, or if the
+AdvaPACS patient has no such identifier, skip: no encounter, a warning in the OpenMRS log and the
+mediator log (ids only), and a non-error response. This also catches a study reassigned to another
+patient in the PACS. Where the check runs (mediator or endpoint) is left to the builder; the endpoint
+is the natural place, since it has the order.
+
+> **Important TODO:** find out whether AdvaPACS webhooks can be partitioned by **Site** or
+> **Organisation** (e.g. one webhook per Site/Organisation, or the Site/Organisation in the event or
+> resource), so each OpenMRS only receives, or only acts on, its own studies and reports. The patient
+> check guards against wrong-patient writes but not against processing other sites' traffic, and
+> doesn't help if two sites' patients ever share an identifier. Related settings already exist:
+> `ADVAPACS_SITE_MAP` / `ADVAPACS_ORGANIZATION`.
+
+### Visits
+
+The study and report encounters are not attached to a visit by the endpoint; the server's visit
+assignment handler (OpenMRS core / emrapi) assigns them, as for other encounters. Confirmed as the
+intended behaviour for this version.
+
+### Accession with no OpenMRS order
+
+Skip it: no encounter, a **warning in the OpenMRS log** (and the mediator log), and a non-error
+response so nothing retries. Examples: a study done in AdvaPACS without an OpenMRS order, or an order
+from another site sharing the AdvaPACS tenant.
+
+### The radiologyapp REST endpoint
+
+A small endpoint under OpenMRS's REST API that calls the existing `saveRadiologyStudy` /
+`saveRadiologyReport`, so the module's validation (including the duplicate-study check) stays in the
+module and nothing duplicates its rules.
+
+Required behaviour:
+
+- **Create study**: takes accession number, date performed, images available (optional), and
+  optionally the technician's OpenMRS provider UUID. Looks up the order
+  (`getRadiologyOrderByOrderNumber`); sets patient, procedure, the order, unknown location, technician
+  (or unknown provider).
+- **Create report**: takes accession number, report date, report type (*final* / *correction*),
+  report text, and optionally the radiologist's OpenMRS provider UUID. Looks up the order; sets
+  patient, procedure, the order, unknown location, provider (or unknown provider).
+- **Outcomes** the mediator can tell apart: *created*, *already exists* (study already recorded;
+  *final* report already recorded; *correction* already recorded for the same report date), *no
+  matching order*. The last two are not errors and are logged as warnings in OpenMRS. Bad input is a
+  4xx; unexpected failures a 5xx.
+- **Missing study when a report arrives**: create the study first, from what the report gives (date
+  performed = report date unless better known; images available unset). *(My call: a real study
+  encounter is cleaner than radiologyapp deriving one from reports.)*
+- Requires an authenticated OpenMRS user with privileges to create encounters (the mediator's
+  existing OpenMRS account).
+
+### The mediator → OpenMRS channel
+
+A new OpenHIM channel for the mediator's calls to OpenMRS, so every call is a logged OpenHIM
+transaction, as the AdvaPACS legs already are. Provisioned by the mediator like its other channels
+(`defaultChannelConfig` in `mediatorConfig.json`), with a mediator-side setting for its URL like
+`ADVAPACS_CHANNEL_URL`. It carries:
+
+- the radiologyapp endpoint calls (this work), and
+- the **order poller's** ServiceRequest searches (`openmrsClient.searchServiceRequests`), moved from
+  calling OpenMRS directly.
+
+Points the builder must handle:
+
+- **Auth.** OpenHIM's private-channel client auth and OpenMRS's both use `Authorization: Basic`, so
+  the one header can't do both. Either a public channel that forwards the mediator's OpenMRS
+  credentials (as the AdvaPACS outbound channel does), restricted so it's reachable only from inside
+  the deployment, or a private channel for a mediator client with the OpenMRS credentials set on the
+  route. Check what Caddy exposes on `/openhim-router/` before choosing a public channel.
+- **Transaction volume and bodies.** The poller searches every few seconds, so this adds one
+  transaction per poll (most of them empty), and non-empty responses hold full order Bundles with
+  Patient resources. Consider not storing bodies for the poll requests (OpenHIM's
+  `requestBody`/`responseBody` channel options), or a separate poll channel with that set.
+- **Retries.** No `autoRetry` for the poll: a failed poll leaves the cursor where it was and the next
+  one covers it. Retries for the endpoint writes are safe (they're idempotent), but OpenHIM retrying
+  a write while AdvaPACS also gets a 5xx and retries means double handling; one or the other.
+- **Paging.** FHIR2's next links name OpenMRS's host; `nextPageQuery` already keeps only the query,
+  so paging should work through the channel unchanged, but test it with more than one page.
+- **Scope.** The other `openmrsClient.js` calls (`getConceptsMappedToSource` for the modality map,
+  `getOrderBundle`) can move to the same channel too; whether they do in this work is the builder's
+  call (my lean: yes, so there's one way to reach OpenMRS).
+- The poller already works on kol-ci; moving it is a change to a working path, so it needs its own
+  regression check (see Verification).
+
+### The mediator
+
+- On each webhook event (after the existing credential and shape checks), read the resource from
+  AdvaPACS FHIR through the existing outbound OpenHIM channel (`ADVAPACS_CHANNEL_URL`):
+  `GET ImagingStudy/{id}` or `GET DiagnosticReport/{id}` (single read, for `presentedForm`), plus the
+  study or ServiceRequest if the accession isn't on the report.
+- Apply the mapping above and call the radiologyapp endpoint.
+- Respond to AdvaPACS: 200 once the event has been handled or deliberately skipped; 5xx if AdvaPACS
+  or OpenMRS couldn't be reached or failed, so a retry (if AdvaPACS does them) can succeed later. The
+  handling is idempotent, so a retry never duplicates.
+- **Stateless**: no local store; OpenMRS's existing encounters, via the endpoint's *already exists*
+  outcomes, are what make it idempotent.
+- Log each decision: event, resource id, status, accession, outcome. No patient details, no report text.
+- *(My call)* The "no patient details in logs" rule covers the mediator's and OpenMRS's logs. OpenHIM's
+  transaction store already keeps full order bodies (with Patient resources) and will keep report
+  bodies too; that is OpenHIM's role. Whether to limit body storage there for production is a
+  separate operational decision.
+- New settings (radiologyapp endpoint path, report-status → type mapping) get README entries, like
+  the existing ones.
+
+## Left to the builder
+
+- The endpoint's URL, request and response format, and which REST framework pieces to use
+  (e.g. a controller under `/ws/rest/v1/radiologyapp/...`, which needs a webservices.rest dependency
+  the module doesn't have today).
+- The channel's auth option and body-storage settings (see "The mediator → OpenMRS channel").
+- How *correction* repeats are detected (report date is the suggestion; the IMLADRIS lab saw
+  AdvaPACS update `issued` on each sign and amend, so a new amendment gets a new date; confirm on kol-ci).
+- Whether to handle events synchronously or acknowledge first and process in the background (watch
+  AdvaPACS's timeout; unknown).
+- Tests in both repos, and the radiologyapp release / kol-ci deployment steps.
+
+## Verification
+
+On kol-ci, with your own AdvaPACS account:
+
+1. Place a radiology order, acquire with the modality simulator: a Radiology Study appears in
+   OpenMRS for that order, location unknown, images available as expected.
+2. Write and sign a report: one *final* Radiology Report with the report text.
+3. Trigger further transitions on the signed report: no second *final*.
+4. Amend the report: one *correction* report.
+5. Replay an event (resend from the OpenHIM console): nothing new is created.
+6. Study for an accession unknown to OpenMRS: a warning in the OpenMRS log, nothing created.
+6a. Study whose AdvaPACS patient doesn't match the order's patient (e.g. reassign the study to another
+   patient in AdvaPACS): a warning, nothing created.
+7. With a radiologist whose Practitioner has the provider-UUID identifier: the report shows that
+   provider; without it, the unknown provider. Same for a technician on the ImagingStudy, if
+   AdvaPACS fills `series.performer`.
+8. Order poller through the new channel: placing an order still reaches AdvaPACS, the polls show
+   in OpenHIM's transaction log as expected (bodies stored or not, per the chosen settings), and a
+   poll across more than one page of results works.
+9. Check the accession identifier on a real ImagingStudy: its `system` and any `assigner` (feeds
+   non-goal 11).
