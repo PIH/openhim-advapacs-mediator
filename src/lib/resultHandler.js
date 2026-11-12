@@ -139,7 +139,14 @@ async function handleReport(ctx) {
   let datePerformed;
   const studyId = mapper.referenceId(Array.isArray(report.study) ? report.study[0] : null, 'ImagingStudy');
   if (studyId) {
-    const study = await read('ImagingStudy', studyId, ctx);
+    let study = null;
+    try {
+      study = await read('ImagingStudy', studyId, ctx);
+    } catch (err) {
+      // the study is only optional enrichment when the report has its own accession
+      if (!(err instanceof Skip) || !accession) throw err;
+      logger.warn('DiagnosticReport has an unusable study reference', { field: 'study' });
+    }
     if (study) {
       if (!accession) accession = accessionNumber(study);
       // an unusable study date is left out; radiologyapp then uses the report date

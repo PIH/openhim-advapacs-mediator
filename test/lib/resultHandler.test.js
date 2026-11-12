@@ -321,6 +321,27 @@ describe('reports', () => {
     expect(importReport.mock.calls[0][0]).not.toHaveProperty('datePerformed');
   });
 
+  test('carries on without datePerformed when the study id is invalid but the report has its own accession', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        identifier: [{ system: ACC_SYS, value: 'OWN' }],
+        study: [{ reference: 'ImagingStudy/a/../b' }],
+      }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'CREATED' });
+    expect(importReport.mock.calls[0][0]).not.toHaveProperty('datePerformed');
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ field: 'study' }));
+  });
+
+  test('still skips on an invalid study id when the report has no accession of its own', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ study: [{ reference: 'ImagingStudy/a/../b' }] }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'invalid id' });
+  });
+
   test('omits an unparseable study date from a report rather than skipping it', async () => {
     resources({
       'DiagnosticReport/r1': report({ study: [{ reference: 'ImagingStudy/st1' }] }),
