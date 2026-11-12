@@ -173,7 +173,9 @@ a FHIR read from AdvaPACS.
 - Accession number: from the report's ImagingStudy (`study`) or ServiceRequest (`basedOn`)
   identifier.
 - Report date: `issued`.
-- Report text: decoded `presentedForm` (plain text; see non-goal 2).
+- Report text: decoded `presentedForm` (plain text; see non-goal 2). The report's `conclusion` (a short
+  summary/impression) is never used as the report text; if a report has one, it isn't saved and a
+  warning says so (field name only). A report with no `presentedForm` is skipped with a warning.
 - Report type: *final* or *correction*, from `status`.
 - Location: always the unknown location.
 - Radiologist: see below.

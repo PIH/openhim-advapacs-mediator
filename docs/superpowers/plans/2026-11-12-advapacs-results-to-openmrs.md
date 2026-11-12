@@ -349,10 +349,10 @@
   - `reportTypeFor(status): 'final' | 'correction' | null`: `final` → `final`; `amended`/`corrected` → `correction`; anything else → `null`.
   - `studySkipReason(imagingStudy): string | null`: `'no started'` if `started` is absent; `'no instances'` if `numberOfInstances === 0`; otherwise `null`.
   - `imagesAvailable(imagingStudy): boolean | null`: `numberOfInstances > 0` → `true`; `0` → `false`; absent → `null`.
-  - `reportText(report): {text, contentType} | {skipReason}`:
+  - `reportText(report): {text, contentType, conclusionDropped} | {skipReason, conclusionDropped}`:
     - The first `presentedForm[]` with `contentType` starting `text/plain`, else the first with `data`, decoded from base64 as UTF-8.
-    - If there's no `presentedForm` data, use `conclusion` (contentType `text/plain`).
-    - If neither exists → `{skipReason: 'no report text'}`.
+    - If there's no `presentedForm` data → `{skipReason: 'no report text'}`.
+    - `conclusion` is never used as the report text. `conclusionDropped` is `true` whenever `report.conclusion` is a non-empty string, in both result shapes.
   - `singlePractitionerId(references): string | null`: given FHIR References, returns the id if exactly one distinct `Practitioner/{id}` reference is present; otherwise `null`. This covers none, several, and `PractitionerRole`.
   - `technicianReferences(imagingStudy): Reference[]`: every `series[].performer[].actor`.
   - `radiologistReferences(report): Reference[]`: `resultsInterpreter` if it's non-empty, else `performer`.
@@ -364,8 +364,9 @@
   - `images available is null when numberOfInstances is absent`
   - `decodes UTF-8 plain-text presentedForm` (include a non-ASCII character, e.g. "Sesotho: ê")
   - `prefers text/plain over text/html`
-  - `falls back to conclusion`
-  - `returns a skip reason when the report has no text`
+  - `does not use conclusion as the report text`: no `presentedForm` but a `conclusion` → `{skipReason: 'no report text', conclusionDropped: true}`.
+  - `flags a conclusion dropped alongside presentedForm`: both present → the presentedForm text, `conclusionDropped: true`.
+  - `returns a skip reason when the report has no text`, with `conclusionDropped: false`
   - `returns the single Practitioner id`, `returns null for two different practitioners`, `returns null for a PractitionerRole`
   - `ignores identifiers without a system`, as a mapper-level case through `accessionNumber`
 
@@ -416,6 +417,7 @@ The flow:
 - **Logging:**
   - One `info` line per event: `eventType`, `eventId`, `resourceId`, `status`, `accession`, `outcome`, `reason`.
   - A `warn` when the report text's `contentType` isn't `text/plain`, giving the contentType only.
+  - A `warn` when `conclusionDropped` is true (report id and accession only, never the conclusion's text), whether the report was saved or skipped: "DiagnosticReport has a conclusion, which isn't saved to OpenMRS".
   - A `warn` for the outcomes `NO_MATCHING_ORDER`, `PATIENT_MISMATCH` and `ALREADY_EXISTS`.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -424,6 +426,7 @@ The flow:
   - `imports a final report and takes the accession and datePerformed from the ImagingStudy`
   - `takes the accession from basedOn when the report and study have none`
   - `skips a preliminary report without reading anything else`
+  - `warns, without its text, when a report's conclusion is dropped`
   - `passes the radiologist uuid only when the Practitioner has the provider-uuid identifier`
   - `skips with 200 when AdvaPACS has no such resource`: `readResource` resolves `null` → `{outcome: 'SKIPPED', reason: 'not found'}`.
   - `rejects when OpenMRS is unreachable` (`importReport` rejects)
