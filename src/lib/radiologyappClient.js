@@ -19,13 +19,16 @@ async function post(path, body) {
     logger.info('radiologyapp import', { path, outcome: data && data.outcome });
     return data;
   } catch (err) {
+    // Never let an axios error escape: it carries config.data (request body)
+    // and config.auth (password). Throw a fresh Error with plain fields only.
+    const status = err.response && err.response.status;
     const serverMessage = err.response && err.response.data && err.response.data.error;
-    if (serverMessage) {
-      const wrapped = new Error(`radiologyapp ${path} failed (${err.response.status}): ${serverMessage}`);
-      wrapped.response = err.response;
-      throw wrapped;
-    }
-    throw err;
+    let message = `radiologyapp ${path} failed (${status || err.code || 'no response'})`;
+    if (typeof serverMessage === 'string') message += `: ${serverMessage}`;
+    const wrapped = new Error(message);
+    if (status) wrapped.status = status;
+    if (err.code) wrapped.code = err.code;
+    throw wrapped;
   }
 }
 
