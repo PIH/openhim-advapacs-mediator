@@ -143,8 +143,8 @@ async function handleReport(ctx) {
     try {
       study = await read('ImagingStudy', studyId, ctx);
     } catch (err) {
-      // the study is only optional enrichment when the report has its own accession
-      if (!(err instanceof Skip) || !accession) throw err;
+      // a malformed study reference is treated like a missing study: the basedOn fallback follows
+      if (!(err instanceof Skip)) throw err;
       logger.warn('DiagnosticReport has an unusable study reference', { field: 'study' });
     }
     if (study) {

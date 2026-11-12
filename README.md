@@ -132,9 +132,11 @@ OpenHIM's answer, so it can take up to about 10 seconds (the channel's route
 timeout) plus processing. Events of unsupported types, and AdvaPACS's
 `TEST_EVENT`, are acknowledged without going to OpenHIM.
 
-*Known risk:* a 5xx from OpenHIM that comes before it has stored the
-transaction (an internal error) counts as accepted, so that event is lost
-unless AdvaPACS resends it.
+*Known risk:* a 5xx counts as accepted only when OpenHIM says it stored the
+transaction (an `X-OpenHIM-TransactionID` response header). If OpenHIM's
+timeout answer lacks that header, we answer 503 and rely on idempotency
+(AdvaPACS resends and the import is a no-op the second time) -- to verify on
+kol-ci.
 
 **Retries.** If processing fails (OpenMRS or AdvaPACS down, say), OpenHIM
 retries the event every 5 minutes, up to 24 times (about 2 hours). A

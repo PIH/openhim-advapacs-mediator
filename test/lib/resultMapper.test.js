@@ -21,7 +21,7 @@ describe('resultMapper', () => {
   });
   it('images available is null when numberOfInstances is absent', () => {
     expect(m.imagesAvailable({})).toBeNull();
-    expect(m.imagesAvailable({ numberOfInstances: 0 })).toBe(false);
+    expect(m.imagesAvailable({ numberOfInstances: 0 })).toBeNull(); // 0-instance studies are skipped earlier
     expect(m.imagesAvailable({ numberOfInstances: 4 })).toBe(true);
   });
 

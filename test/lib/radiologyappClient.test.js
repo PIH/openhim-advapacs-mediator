@@ -36,6 +36,18 @@ describe('radiologyappClient', () => {
     expect(mockClient.post).toHaveBeenCalledWith('/studyimport', body);
   });
 
+  test('uses the URL and credentials set after the module was required', async () => {
+    jest.resetModules();
+    delete process.env.OPENMRS_RESULTS_CHANNEL_URL;
+    axios = require('axios');
+    axios.create.mockReturnValue(mockClient);
+    mockClient.post.mockResolvedValue({ status: 200, data: { outcome: 'CREATED' } });
+    const late = require('../../src/lib/radiologyappClient');
+    process.env.OPENMRS_RESULTS_CHANNEL_URL = 'http://late:5001/openmrs';
+    await late.importStudy({});
+    expect(axios.create.mock.calls[0][0].baseURL).toBe('http://late:5001/openmrs/ws/rest/v1/radiologyapp');
+  });
+
   test('posts a report to /reportimport', async () => {
     const result = { outcome: 'ALREADY_EXISTS', encounterUuid: 'enc-2' };
     mockClient.post.mockResolvedValue({ status: 200, data: result });
@@ -106,12 +118,10 @@ describe('radiologyappClient', () => {
     expect(e.message).not.toContain('[object Object]');
   });
 
-  test('defaults the username to advapacs-mediator', () => {
-    jest.resetModules();
+  test('defaults the username to advapacs-mediator', async () => {
     delete process.env.OPENHIM_RESULTS_CLIENT_ID;
-    axios = require('axios');
-    axios.create.mockReturnValue(mockClient);
-    require('../../src/lib/radiologyappClient');
+    mockClient.post.mockResolvedValue({ status: 200, data: {} });
+    await radiologyapp.importStudy({});
     expect(axios.create.mock.calls[0][0].auth.username).toBe('advapacs-mediator');
   });
 });

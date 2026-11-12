@@ -1,6 +1,7 @@
 require('dotenv').config();
 const crypto = require('crypto');
 const { client: api } = require('../src/lib/openhimClient');
+const { resultsClientId } = require('../src/lib/resultsClient');
 const mediatorConfig = require('../mediatorConfig.json');
 
 // Channels aren't auto-created when the mediator registers -- OpenHIM only
@@ -54,11 +55,6 @@ function withRealAdvapacsRoute(channelDef) {
       pathTransform
     }))
   };
-}
-
-// The OpenHIM Client the mediator calls the results channel as (Basic auth), which allows only it.
-function resultsClientId() {
-  return process.env.OPENHIM_RESULTS_CLIENT_ID || 'advapacs-mediator';
 }
 
 function withResultsClient(channelDef) {

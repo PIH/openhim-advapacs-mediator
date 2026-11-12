@@ -18,8 +18,8 @@ function studySkipReason(study) {
 
 function imagesAvailable(study) {
   const n = isObj(study) ? study.numberOfInstances : undefined;
-  if (typeof n !== 'number') return null;
-  return n > 0;
+  // 0-instance studies are skipped earlier (studySkipReason), so there is no false.
+  return typeof n === 'number' && n > 0 ? true : null;
 }
 
 function reportText(report) {

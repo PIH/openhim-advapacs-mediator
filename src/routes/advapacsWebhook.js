@@ -75,9 +75,6 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, async (req, res) => 
   // once OpenHIM has answered do we acknowledge AdvaPACS; otherwise a 503 makes AdvaPACS retry.
   // Only the documented fields go on, never the raw body.
   const submitted = { timestamp: event.timestamp, eventId: event.eventId, eventType: event.eventType, data: { type: data.type, id: data.id } };
-  for (const object of [submitted, submitted.data]) {
-    for (const key of Object.keys(object)) if (object[key] === undefined) delete object[key];
-  }
   const result = await submitEvent(submitted);
   if (result.accepted) {
     return res.status(200).json({ status: 'ok' });

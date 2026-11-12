@@ -334,12 +334,26 @@ describe('reports', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ field: 'study' }));
   });
 
-  test('still skips on an invalid study id when the report has no accession of its own', async () => {
+  test('falls back to basedOn when the study id is invalid and the report has no accession of its own', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        study: [{ reference: 'ImagingStudy/a/../b' }],
+        basedOn: [{ reference: 'ServiceRequest/sr1' }],
+      }),
+      'ServiceRequest/sr1': { identifier: [{ system: ACC_SYS, value: 'ACC-SR' }] },
+      'Patient/p1': patient,
+    });
+    await handleEvent(reportEvent());
+    expect(importReport).toHaveBeenCalledWith(expect.objectContaining({ accessionNumber: 'ACC-SR' }));
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ field: 'study' }));
+  });
+
+  test('skips with no accession when the study id is invalid and nothing else has one', async () => {
     resources({
       'DiagnosticReport/r1': report({ study: [{ reference: 'ImagingStudy/a/../b' }] }),
       'Patient/p1': patient,
     });
-    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'invalid id' });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'no accession with our system' });
   });
 
   test('omits an unparseable study date from a report rather than skipping it', async () => {

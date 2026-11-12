@@ -36,7 +36,7 @@ describe('eventQueueClient', () => {
     expect(require('axios').create.mock.calls[0][0].timeout).toBe(30000);
   });
 
-  test.each(['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD'])(
+  test.each(['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD', 'OPENHIM_ROUTER_URL'])(
     'does not call OpenHIM, and reports NOT_CONFIGURED, when %s is unset', async (name) => {
       delete process.env[name];
       await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: false, code: 'NOT_CONFIGURED', missing: [name] });
@@ -50,9 +50,36 @@ describe('eventQueueClient', () => {
     expect(mockClient.post.mock.calls[0][2].auth.username).toBe('advapacs-mediator');
   });
 
-  test.each([200, 202, 500, 503, 504])('treats %i as accepted', async (status) => {
+  test.each([200, 202])('treats %i as accepted, with or without a transaction id', async (status) => {
     mockClient.post.mockResolvedValue({ status });
     await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: true, status });
+    mockClient.post.mockResolvedValue({ status, headers: { 'x-openhim-transactionid': 't1' } });
+    await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: true, status });
+  });
+
+  test.each([500, 503, 504])('treats %i as accepted when OpenHIM stored the transaction', async (status) => {
+    mockClient.post.mockResolvedValue({ status, headers: { 'x-openhim-transactionid': 't1' } });
+    await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: true, status });
+  });
+
+  test.each([500, 502, 503, 504])('treats %i without a transaction id as not accepted', async (status) => {
+    mockClient.post.mockResolvedValue({ status });
+    await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: false, status });
+    mockClient.post.mockResolvedValue({ status, headers: {} });
+    await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: false, status });
+  });
+
+  test('reads OPENHIM_ROUTER_URL and the credentials at call time', async () => {
+    jest.resetModules();
+    delete process.env.OPENHIM_ROUTER_URL;
+    delete process.env.OPENHIM_RESULTS_CLIENT_ID;
+    require('axios').create.mockReturnValue(mockClient);
+    ({ submitEvent } = require('../../src/lib/eventQueueClient'));
+    process.env.OPENHIM_ROUTER_URL = 'http://late:5001';
+    mockClient.post.mockResolvedValue({ status: 200 });
+    await submitEvent(EVENT);
+    expect(mockClient.post.mock.calls[0][0]).toBe('http://late:5001/results/advapacs-event');
+    expect(mockClient.post.mock.calls[0][2].auth.username).toBe('advapacs-mediator');
   });
 
   test.each([400, 401, 403, 404, 405, 413, 429])('treats %i as not accepted', async (status) => {
@@ -68,7 +95,7 @@ describe('eventQueueClient', () => {
 
   test('warns, with the status only, when an accepted answer is not 2xx', async () => {
     const logger = require('../../src/lib/logger');
-    mockClient.post.mockResolvedValue({ status: 500, data: { secret: 'body' } });
+    mockClient.post.mockResolvedValue({ status: 500, headers: { 'x-openhim-transactionid': 't1' }, data: { secret: 'body' } });
     await submitEvent(EVENT);
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(logger.warn.mock.calls[0])).toContain('500');
