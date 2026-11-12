@@ -32,7 +32,7 @@ async function post(path, body) {
   }
 }
 
-/** POST a study import. Resolves {outcome, encounterUuid, studyCreated}; rejects on any non-2xx. */
+/** POST a study import. Resolves {outcome, encounterUuid}; rejects on any non-2xx. */
 function importStudy(body) {
   return post('/study', body);
 }

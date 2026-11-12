@@ -22,7 +22,7 @@ describe('radiologyappClient', () => {
   });
 
   test("posts a study to /study with the results client's Basic auth", async () => {
-    const result = { outcome: 'CREATED', encounterUuid: 'enc-1', studyCreated: true };
+    const result = { outcome: 'CREATED', encounterUuid: 'enc-1' };
     mockClient.post.mockResolvedValue({ status: 200, data: result });
     const body = { accessionNumber: 'A1' };
 
@@ -37,7 +37,7 @@ describe('radiologyappClient', () => {
   });
 
   test('posts a report to /report', async () => {
-    const result = { outcome: 'ALREADY_EXISTS', encounterUuid: 'enc-2', studyCreated: false };
+    const result = { outcome: 'ALREADY_EXISTS', encounterUuid: 'enc-2' };
     mockClient.post.mockResolvedValue({ status: 200, data: result });
     const body = { accessionNumber: 'A1', reportText: 'x' };
 
