@@ -40,7 +40,7 @@ orders and results between them as FHIR resources.
    comments in `orderRelay.js` for the current state and ticket numbers
    behind each. `advapacsClient.js` then pushes the `ServiceRequest` itself.
    Both pushes go through a second, **outbound** OpenHIM channel ("Mediator
-   to AdvaPACS Order Push", `^/advapacs/.*$`) rather than calling AdvaPACS
+   to AdvaPACS", `^/advapacs/.*$`) rather than calling AdvaPACS
    directly, so each leg is logged and auto-retried by OpenHIM (see Known
    limitations).
 4. As the study is performed and reported, AdvaPACS calls its webhook

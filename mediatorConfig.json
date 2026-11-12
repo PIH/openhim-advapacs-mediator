@@ -51,7 +51,7 @@
       "autoRetryMaxAttempts": 30
     },
     {
-      "name": "Mediator to AdvaPACS Order Push",
+      "name": "Mediator to AdvaPACS",
       "urlPattern": "^/advapacs/.*$",
       "routes": [
         {
