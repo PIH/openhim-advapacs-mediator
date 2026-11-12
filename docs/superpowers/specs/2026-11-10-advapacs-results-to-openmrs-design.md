@@ -39,9 +39,11 @@ Tracked so they can be picked up later:
    a provider identifier (LSO-245).
 4. **`STUDY_UPDATED`** events: ignored.
 5. **Draft (`partial`), `registered`, `unknown`, `cancelled`, `entered-in-error`** reports: ignored.
-6. **Lost events.** Unknown whether AdvaPACS retries a failed webhook. Open question for the
-   AdvaPACS vendor: do they retry, how often, for how long? If not, events that arrive during an
-   OpenMRS/OpenHIM outage are lost; no catch-up poll is built in this version.
+6. **Lost events.** Since the 2026-11-12 change (see "Acknowledging AdvaPACS and retrying"), an
+   event that reaches OpenHIM is retried by OpenHIM, so AdvaPACS's retry behaviour only matters when
+   the webhook can't be received at all (OpenHIM or the mediator down, or the network). Still an
+   open question for the AdvaPACS vendor: do they retry, how often, for how long? If not, events sent
+   while OpenHIM or the mediator is down are lost; no catch-up poll is built in this version.
 7. **Number of images.** radiologyapp's study model has *Radiology images available* (yes/no) but
    no count. Future task: consider adding a "number of images" concept to the *Radiology study
    construct*, filled from `ImagingStudy.numberOfInstances`.
@@ -327,19 +329,70 @@ OpenHIM admins in the console.
 
 Points the builder must handle:
 
-- **Retries.** Endpoint writes are idempotent, so retrying is safe, but use OpenHIM's `autoRetry` or
-  AdvaPACS's retry (via a 5xx), not both, or an event is handled twice.
+- **Retries.** No `autoRetry` on this channel: retries happen one level up, on the event-processing
+  channel (see "Acknowledging AdvaPACS and retrying"), so an event isn't retried twice over.
+
+### Acknowledging AdvaPACS and retrying *(change, 2026-11-12)*
+
+**Why.** The first version handled each event while AdvaPACS waited, and answered 5xx on failure so
+that AdvaPACS would retry. That depends on AdvaPACS retrying (unknown), lets a permanent failure
+(e.g. a mistyped setting) be retried forever, and makes AdvaPACS wait behind every earlier event,
+risking its webhook timeout and a storm of retries. OpenHIM already does bounded, visible retries
+for the order path; use it for results too.
+
+**How it works.**
+
+```
+AdvaPACS ──webhook──▶ OpenHIM "AdvaPACS to Mediator Study and Report Webhook" channel (as today)
+   ──▶ mediator POST /webhooks/advapacs: check credentials and event shape, then
+       POST the event to OpenHIM's new "AdvaPACS Event Processing" channel and wait for OpenHIM's answer
+          ──▶ mediator POST /advapacs/events/process: do the work (read AdvaPACS, call radiologyapp)
+              • handled or deliberately skipped → 200
+              • worth retrying → OpenHIM mediator-error response (as routes/serviceRequest.js does),
+                so OpenHIM queues the transaction for auto-retry
+   ◀── once OpenHIM has answered (the transaction is stored, and queued for retry if it failed),
+       the mediator answers AdvaPACS 200
+```
+
+- **AdvaPACS is acknowledged only after OpenHIM has accepted the event.** If OpenHIM can't be
+  reached, rejects the mediator's credentials, or has no such channel, the mediator answers AdvaPACS
+  with a 5xx (nothing was stored, so AdvaPACS's own retry, if any, is the only recovery).
+- **OpenHIM's answer comes after the first processing attempt** (OpenHIM is a pass-through). To
+  keep AdvaPACS from waiting on a slow attempt, the processing channel's route has a short timeout
+  *(my call: 10 seconds)*. On a timeout OpenHIM stores the transaction as failed and queues a retry,
+  and answers the mediator, which then acknowledges AdvaPACS. The slow attempt carries on in the
+  mediator; when the retry comes, the idempotent endpoint answers *already exists*.
+- **Retry schedule** *(my call)*: every 5 minutes, up to 24 attempts (2 hours), covering an OpenMRS
+  restart. After the last attempt the transaction stays *Failed* in the OpenHIM console, where it
+  can be re-run once the cause is fixed (e.g. a configuration error).
+- **What's retried:** AdvaPACS or OpenMRS unreachable, timeouts, 5xx; a 4xx from radiologyapp
+  (contract or configuration error, fixable); missing mediator configuration; **a 404 for the
+  event's own resource** (the event may arrive before AdvaPACS can serve the resource), bounded by
+  the schedule. **What's not retried** (200, logged): every deliberate skip in "Event → OpenMRS
+  mapping" (status not imported, no accession with our system, no patient identifier, no report
+  text, unparseable dates, …) and the endpoint's *already exists* / *no matching order* / *patient
+  mismatch* outcomes.
+- **Ordering.** Events are still processed one at a time in the mediator, but a retried event runs
+  after later ones (e.g. a *final* retried after its *correction*). The endpoint's rules still give
+  the right end state (one *final*, corrections by date/text); verify on kol-ci.
+- **What OpenHIM stores:** the processing channel's bodies are just the webhook event (references
+  and ids, no patient details) and the outcome.
+- The processing channel is private, allows only the mediator's own client (the results client,
+  `advapacs-mediator`), and is provisioned by `scripts/setupOpenhim.js` like the others.
+- The webhook channel itself keeps no `autoRetry` (AdvaPACS → mediator), and the radiologyapp channel
+  keeps none (see above).
 
 ### The mediator
 
-- On each webhook event (after the existing credential and shape checks), read the resource from
+- On each webhook event (after the existing credential and shape checks), hand it to OpenHIM's
+  processing channel as above. The processing endpoint reads the resource from
   AdvaPACS FHIR through the existing outbound OpenHIM channel (`ADVAPACS_CHANNEL_URL`):
   `GET ImagingStudy/{id}` or `GET DiagnosticReport/{id}` (single read, for `presentedForm`), plus the
   study or ServiceRequest if the accession isn't on the report.
 - Apply the mapping above and call the radiologyapp endpoint.
-- Respond to AdvaPACS: 200 once the event has been handled or deliberately skipped; 5xx if AdvaPACS
-  or OpenMRS couldn't be reached or failed, so a retry (if AdvaPACS does them) can succeed later. The
-  handling is idempotent, so a retry never duplicates.
+- Respond to AdvaPACS: 200 once OpenHIM has accepted the event; 5xx only if OpenHIM couldn't take it
+  (see "Acknowledging AdvaPACS and retrying"). The handling is idempotent, so a retry never
+  duplicates.
 - **Stateless**: no local store; OpenMRS's existing encounters, via the endpoint's *already exists*
   outcomes, are what make it idempotent.
 - Log each decision: event, resource id, status, accession, outcome. No patient details, no report text.
@@ -358,8 +411,8 @@ Points the builder must handle:
 - Whether the new channel stores request/response bodies (report text passes through it).
 - How *correction* repeats are detected (report date is the suggestion; the IMLADRIS lab saw
   AdvaPACS update `issued` on each sign and amend, so a new amendment gets a new date; confirm on kol-ci).
-- Whether to handle events synchronously or acknowledge first and process in the background (watch
-  AdvaPACS's timeout; unknown).
+- The processing channel's path and name, and the retry settings' exact values if kol-ci shows a
+  reason to change them.
 - Tests in both repos, and the radiologyapp release / kol-ci deployment steps.
 
 ## Verification
@@ -383,3 +436,11 @@ On kol-ci, with your own AdvaPACS account:
 9. Check the accession identifier on a real ImagingStudy and ServiceRequest: its `system` and any
    `assigner`. Then send (or replay with an edited body) a study whose accession has the right
    number but a different `system`: nothing created, a warning logged.
+10. Retries: stop OpenMRS (or point the results channel somewhere unreachable), send an event:
+    AdvaPACS gets a 200, the processing transaction is *Failed* and queued for retry in OpenHIM;
+    start OpenMRS: a later retry creates the encounter. Also check a mistyped
+    `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` stops after the last retry and can be re-run from the console.
+11. Ordering: sign a report, then amend it quickly while OpenMRS is down; after it's back, one
+    *final* and one *correction*.
+12. Early 404: look for any first-attempt 404 on the event's own resource in OpenHIM, to see whether
+    AdvaPACS sends events before it can serve the resource.
