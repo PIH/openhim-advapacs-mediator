@@ -17,13 +17,6 @@ const CHANNEL_NAMES = [
 ];
 
 const OUTBOUND_CHANNEL_NAME = 'Mediator to AdvaPACS';
-// Channels are upserted by name, so renaming one would leave the old channel in
-// place next to a new one with the same urlPattern, and both would match the
-// same requests. When a channel's new name isn't found, this maps it to the
-// name it used to have; that channel is then updated in place (renamed).
-const PREVIOUS_NAMES = {
-  [OUTBOUND_CHANNEL_NAME]: 'Mediator to AdvaPACS Order Push'
-};
 const WEBHOOK_CHANNEL_NAME = 'AdvaPACS to Mediator Study and Report Webhook';
 const RESULTS_CHANNEL_NAME = 'Mediator to OpenMRS Radiology Results';
 const EVENT_CHANNEL_NAME = 'AdvaPACS Event Processing';
@@ -190,15 +183,6 @@ async function upsertChannel(channelDef) {
   // alerting -- see the comment above advapacsClient.js's createServiceRequest.
   const { data: existing } = await api.get('/channels');
   const match = existing.find((c) => c.name === channelDef.name);
-
-  if (!match && PREVIOUS_NAMES[channelDef.name]) {
-    const previous = existing.find((c) => c.name === PREVIOUS_NAMES[channelDef.name]);
-    if (previous) {
-      await api.put(`/channels/${previous._id}`, channelDef);
-      console.log(`Renamed channel "${previous.name}" to "${channelDef.name}"`);
-      return;
-    }
-  }
 
   if (match) {
     await api.put(`/channels/${match._id}`, channelDef);

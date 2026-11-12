@@ -180,8 +180,7 @@ describe('setupOpenhim', () => {
     });
 
   describe('the "Mediator to AdvaPACS" channel', () => {
-    const NEW_NAME = 'Mediator to AdvaPACS';
-    const OLD_NAME = 'Mediator to AdvaPACS Order Push';
+    const NAME = 'Mediator to AdvaPACS';
 
     function existingChannels(channels) {
       api.get.mockImplementation(async (path) => ({ data: path === '/channels' ? channels : [] }));
@@ -190,35 +189,19 @@ describe('setupOpenhim', () => {
       return api.put.mock.calls.filter(([p]) => p === `/channels/${id}`).map(([, body]) => body);
     }
 
-    test('renames the old "Mediator to AdvaPACS Order Push" channel in place instead of creating a new one', async () => {
-      existingChannels([{ _id: 'old-id', name: OLD_NAME }]);
-
-      await main();
-
-      const puts = putTo('old-id');
-      expect(puts).toHaveLength(1);
-      expect(puts[0]).toMatchObject({ name: NEW_NAME, urlPattern: '^/advapacs/.*$' });
-      expect(posted('/channels').map((c) => c.name)).not.toContain(NEW_NAME);
-      expect(posted('/channels').map((c) => c.name)).not.toContain(OLD_NAME);
-      expect(api.delete).toBeUndefined();
-      const logged = console.log.mock.calls.map(([m]) => m).join('\n');
-      expect(logged).toContain(`Renamed channel "${OLD_NAME}" to "${NEW_NAME}"`);
-    });
-
     test('updates "Mediator to AdvaPACS" when it already exists', async () => {
-      existingChannels([{ _id: 'new-id', name: NEW_NAME }, { _id: 'old-id', name: OLD_NAME }]);
+      existingChannels([{ _id: 'id-1', name: NAME }]);
 
       await main();
 
-      expect(putTo('new-id')).toEqual([expect.objectContaining({ name: NEW_NAME })]);
-      expect(putTo('old-id')).toHaveLength(0);
-      expect(posted('/channels').map((c) => c.name)).not.toContain(NEW_NAME);
+      expect(putTo('id-1')).toEqual([expect.objectContaining({ name: NAME, urlPattern: '^/advapacs/.*$' })]);
+      expect(posted('/channels').map((c) => c.name)).not.toContain(NAME);
     });
 
-    test('creates "Mediator to AdvaPACS" when neither name exists', async () => {
+    test('creates "Mediator to AdvaPACS" when it does not exist', async () => {
       await main();
 
-      expect(posted('/channels').map((c) => c.name)).toContain(NEW_NAME);
+      expect(posted('/channels').map((c) => c.name)).toContain(NAME);
       expect(api.put.mock.calls.filter(([p]) => p.startsWith('/channels/'))).toHaveLength(0);
     });
   });
