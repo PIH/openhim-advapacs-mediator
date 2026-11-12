@@ -49,9 +49,10 @@ orders and results between them as FHIR resources.
    (`{ eventType, data: { type, id } }`). The webhook goes through a third
    OpenHIM channel ("AdvaPACS to Mediator Study and Report Webhook",
    `^/webhooks/advapacs$`) to
-   `POST /webhooks/advapacs` (`src/routes/advapacsWebhook.js`). **For now it
-   only logs each event** (UHM-9458/UHM-9459), so the real event sequence can
-   be seen before anything is written to OpenMRS. See "AdvaPACS webhook" below.
+   `POST /webhooks/advapacs` (`src/routes/advapacsWebhook.js`), which logs
+   the event and hands it to OpenHIM's "AdvaPACS Event Processing" channel;
+   that channel retries it against the mediator until the result is in
+   OpenMRS. See "AdvaPACS webhook" and "Results to OpenMRS" below.
 
 ```
 orderPoller.js (every ORDER_POLL_INTERVAL_MS)
@@ -72,8 +73,8 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
   --strips /openhim-router--> OpenHIM router :5001, channel "AdvaPACS to Mediator Study and Report Webhook"  ^/webhooks/advapacs$
     (authType private: only the "advapacs" OpenHIM Client; forwards the Authorization header)
     --routes to--> mediator's POST /webhooks/advapacs (routes/advapacsWebhook.js): checks the
-                   credentials again, logs the event, then hands it to
-                   lib/resultHandler.js (see "Results to OpenMRS")
+                   credentials again, logs the event, then submits it (lib/eventQueueClient.js)
+                   to OpenHIM's "AdvaPACS Event Processing" channel (see "Results to OpenMRS")
 ```
 
 - **Credentials.** AdvaPACS calls the channel as an OpenHIM Client: in the
@@ -97,15 +98,20 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
   so nothing unexpected (e.g. patient details) reaches the logs. An event
   without an `eventType` and `data.id`, like the one AdvaPACS's webhook
   test sends, still gets a 200 (AdvaPACS rejects the webhook otherwise) and is
-  logged as a warning, with its field names only.
+  logged as a warning, with its field names only. An event of a type that isn't
+  processed (anything but `STUDY_CREATED`, `REPORT_CREATED`, `REPORT_UPDATED`)
+  is acknowledged with a 200 and logged at info (type and id), without going
+  to OpenHIM. Only the documented fields (`timestamp`, `eventId`, `eventType`,
+  `data.type`, `data.id`) are passed on.
 
 ## Results to OpenMRS
 
 ```
 AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
-  --> routes/advapacsWebhook.js --> lib/eventQueueClient.js
-    --> OpenHIM channel "AdvaPACS Event Processing"  POST /results/advapacs-event   (private; auto-retry)
-      --> the mediator's processing endpoint --> lib/resultHandler.js
+  --> OpenHIM channel "AdvaPACS to Mediator Study and Report Webhook"
+    --> routes/advapacsWebhook.js --> lib/eventQueueClient.js
+      --> OpenHIM channel "AdvaPACS Event Processing"  ^/results/advapacs-event$   (private; auto-retry)
+        --> the mediator's POST /results/advapacs-event (routes/advapacsEvent.js) --> lib/resultHandler.js
         --reads the study / report (and its Patient) from AdvaPACS--> advapacsClient.js
         --maps it (lib/resultMapper.js) and POSTs it, as JSON--> radiologyappClient.js
           --> OpenHIM channel "Mediator to OpenMRS Radiology Results"  ^/openmrs/ws/rest/v1/radiologyapp/(study|report)$
@@ -114,19 +120,46 @@ AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
 
 **Hand-off to OpenHIM.** The webhook does not process the event itself. It
 passes it to OpenHIM's "AdvaPACS Event Processing" channel and answers
-AdvaPACS `200` once OpenHIM has taken it: OpenHIM answered 2xx, or 5xx
-(a route timeout, or the mediator reporting an error), in which case the
-transaction is stored and OpenHIM queues the retry. Any 4xx answer (login
-rejected, no such channel, bad request) and no answer at all get `503`, so
-AdvaPACS may resend the event. A 401 can also come from the mediator's
-shared-secret check. The acknowledgement waits for OpenHIM's answer, so it can
-take up to about 10 seconds (the channel's route timeout) plus processing.
+AdvaPACS `{"status":"ok"}` (200) once OpenHIM has accepted it: OpenHIM
+answered 2xx, or 5xx (a route timeout, or the mediator reporting an error), in
+which case the transaction is stored and OpenHIM queues the retry. Any 4xx
+answer (login rejected, no such channel, bad request), no answer at all, and
+an unset `MEDIATOR_INBOUND_SECRET` or `OPENHIM_RESULTS_CLIENT_PASSWORD` (the
+mediator then doesn't call OpenHIM; startup logs an error naming the missing
+variable) get `503`, so AdvaPACS may resend the event. A 401 can also come
+from the mediator's shared-secret check. The acknowledgement waits for
+OpenHIM's answer, so it can take up to about 10 seconds (the channel's route
+timeout) plus processing. Events of unsupported types, and AdvaPACS's
+`TEST_EVENT`, are acknowledged without going to OpenHIM.
+
+*Known risk:* a 5xx from OpenHIM that comes before it has stored the
+transaction (an internal error) counts as accepted, so that event is lost
+unless AdvaPACS resends it.
 
 **Retries.** If processing fails (OpenMRS or AdvaPACS down, say), OpenHIM
 retries the event every 5 minutes, up to 24 times (about 2 hours). A
 transaction that still fails after that shows as Failed in the OpenHIM
 console; once the cause is fixed, re-run it there (Transactions, select the
 Failed ones, Rerun).
+
+*Retried:* AdvaPACS or OpenMRS unreachable, timeouts, 5xx; a 4xx from
+radiologyapp (a contract or configuration error, fixable); missing mediator
+configuration; a 404 for the event's own resource (the event may arrive before
+AdvaPACS can serve it). *Not retried* (200, logged): every deliberate skip (a
+status that isn't imported, no accession with our system, no patient
+identifier, no report text, unparseable dates, ...) and the endpoint's
+*already exists*, *no matching order* and *patient mismatch* outcomes.
+
+*Abandoned attempts.* OpenHIM gives up on the route after 10 seconds, but the
+request stays queued in the mediator. If OpenHIM has gone by the time an event's
+turn comes, the mediator skips it without reading AdvaPACS or calling OpenMRS
+(logged at info with the event id); OpenHIM's retry redoes the work. A retried
+event runs after later ones, so it reads the resource as it is then.
+
+*Secret rotation.* Transactions stored in OpenHIM keep the
+`MEDIATOR_INBOUND_SECRET` they were sent with. After rotating it, re-running
+or retrying older transactions makes them 401 at the mediator, and a 401 is
+not retried.
 
 An event carries only a reference to the resource, so the handler reads the
 study or report back from AdvaPACS, finds the OpenMRS order through the
@@ -146,8 +179,8 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
   | `ADVAPACS_ACCESSION_NUMBER_SYSTEM` | Identifier system under which AdvaPACS carries our accession number; results are matched on it only. Has a default. |
   | `OPENMRS_RESULTS_CHANNEL_URL` | Address of the "Mediator to OpenMRS Radiology Results" channel as the mediator sees it (distro-tools: `http://openhim-core:5001/openmrs`). |
   | `OPENHIM_RESULTS_CLIENT_ID` | OpenHIM Client the mediator calls that channel as (default `advapacs-mediator`). |
-  | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. Now needed for the hand-off to OpenHIM too. |
-  | `MEDIATOR_INBOUND_SECRET` | Shared secret the mediator sends to its own processing endpoint through OpenHIM. Now needed for results (it already protected the order endpoints). |
+  | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. Also carries the hand-off to OpenHIM's processing channel: unset, every event is answered 503. |
+  | `MEDIATOR_INBOUND_SECRET` | Shared secret the mediator sends to its own processing endpoint through OpenHIM; `/results/advapacs-event` checks it as `/fhir/ServiceRequest` does. Needed for results: unset, every event is answered 503. |
   | `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` | The OpenMRS patient identifier type matching `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`. Required. |
 
   `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID`, `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`
@@ -171,13 +204,13 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
   clamps a date in the future to now, since OpenMRS rejects future encounters.
 - **One event at a time.** The handler processes events one at a time, in
   arrival order, so two final events for one report can't both create it.
-- **200 vs. 5xx.** Handled and deliberately skipped events get a 200 with
-  `{"status":"ok","outcome":...}`: a report that isn't final yet, no matching
-  order, a patient mismatch, a result that already exists, an unsupported event
-  type. A failure of AdvaPACS or OpenMRS, or missing configuration, gets a 500
-  `{"status":"error"}` (details only in the mediator's log), so AdvaPACS can
-  retry. A result that already exists (`ALREADY_EXISTS`, normal for each
-  update after a final report) is logged at info; `NO_MATCHING_ORDER` and
+- **Answers.** The processing endpoint answers 200
+  `{"status":"ok","outcome":...}` for handled and deliberately skipped events
+  (see "Retried" and "Not retried" above). A failure of AdvaPACS or OpenMRS, or
+  missing configuration, is answered as an OpenHIM mediator error (503,
+  `application/json+openhim`), so OpenHIM queues the retry; details only in the
+  mediator's log. A result that already exists (`ALREADY_EXISTS`, normal for
+  each update after a final report) is logged at info; `NO_MATCHING_ORDER` and
   `PATIENT_MISMATCH` are logged as warnings. Logs never include patient
   identifiers or report text.
 
@@ -500,7 +533,7 @@ Unit tests only — every HTTP call (to OpenMRS, AdvaPACS/OpenHIM's outbound
 channel) is mocked with Jest, so nothing needs to be running: no Docker, no
 OpenHIM, no OpenMRS. Covers `orderRelay.js`, `advapacsClient.js`,
 `openmrsClient.js`, `orderPoller.js`, `modalityMap.js`, `routes/serviceRequest.js`,
-`routes/health.js`, `routes/advapacsWebhook.js` and `scripts/setupOpenhim.js`'s
+`routes/health.js`, `routes/advapacsWebhook.js`, `routes/advapacsEvent.js`, `lib/eventQueueClient.js`, `lib/openhimResponse.js` and `scripts/setupOpenhim.js`'s
 Clients and channels. Does **not** cover `src/index.js`'s route-mounting/ingestion-mode
 logic (no testable seam without a refactor) — see
 `docs/superpowers/specs/2026-08-06-test-suite-design.md` for why.
@@ -519,5 +552,8 @@ src/lib/orderRelay.js       Shared order-relay logic: upserts Patient first, the
 src/lib/orderPoller.js      Poll-based ingestion (ORDER_INGESTION_MODE=poll) -- submits via OpenHIM's inbound channel
 src/lib/sharedSecretAuth.js Shared-secret Express middleware factory (crypto.timingSafeEqual compare) -- backs the inbound X-Mediator-Secret check
 src/routes/serviceRequest.js       Inbound channel's target; always mounted regardless of ingestion mode; requires X-Mediator-Secret
-src/routes/advapacsWebhook.js      Webhook channel's target; checks the AdvaPACS Client's Basic auth credentials, logs the event, then has resultHandler.js import it into OpenMRS
+src/routes/advapacsWebhook.js      Webhook channel's target; checks the AdvaPACS Client's Basic auth credentials, logs the event, then submits it (eventQueueClient.js) to OpenHIM's "AdvaPACS Event Processing" channel and acknowledges AdvaPACS
+src/routes/advapacsEvent.js        Processing channel's target (POST /results/advapacs-event; requires X-Mediator-Secret); has resultHandler.js import the result into OpenMRS, answering failures as OpenHIM mediator errors so OpenHIM retries
+src/lib/eventQueueClient.js        Submits a webhook event to OpenHIM's processing channel as the results client; accepted = 2xx or 5xx
+src/lib/openhimResponse.js         Builds the OpenHIM mediator-error response (application/json+openhim) that makes OpenHIM queue a retry
 ```
