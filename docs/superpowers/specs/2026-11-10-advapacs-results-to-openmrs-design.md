@@ -346,7 +346,7 @@ for the order path; use it for results too.
 AdvaPACS ──webhook──▶ OpenHIM "AdvaPACS to Mediator Study and Report Webhook" channel (as today)
    ──▶ mediator POST /webhooks/advapacs: check credentials and event shape, then
        POST the event to OpenHIM's new "AdvaPACS Event Processing" channel and wait for OpenHIM's answer
-          ──▶ mediator POST /advapacs/events/process: do the work (read AdvaPACS, call radiologyapp)
+          ──▶ mediator POST /results/advapacs-event: do the work (read AdvaPACS, call radiologyapp)
               • handled or deliberately skipped → 200
               • worth retrying → OpenHIM mediator-error response (as routes/serviceRequest.js does),
                 so OpenHIM queues the transaction for auto-retry
@@ -373,8 +373,12 @@ AdvaPACS ──webhook──▶ OpenHIM "AdvaPACS to Mediator Study and Report W
   text, unparseable dates, …) and the endpoint's *already exists* / *no matching order* / *patient
   mismatch* outcomes.
 - **Ordering.** Events are still processed one at a time in the mediator, but a retried event runs
-  after later ones (e.g. a *final* retried after its *correction*). The endpoint's rules still give
-  the right end state (one *final*, corrections by date/text); verify on kol-ci.
+  after later ones. An event carries only a reference, so every attempt reads the resource **as it
+  is now**: if a report was signed and then amended before the *final* event was processed, the
+  retried event sees `amended` and records a *correction* only, so that order gets a correction and
+  **no *final***. *(My call: acceptable for this version; the latest text is what's recorded.
+  radiologyapp accepts a correction without a final.)* To raise with the team alongside the
+  preliminary-reports question.
 - **What OpenHIM stores:** the processing channel's bodies are just the webhook event (references
   and ids, no patient details) and the outcome.
 - The processing channel is private, allows only the mediator's own client (the results client,
@@ -440,7 +444,8 @@ On kol-ci, with your own AdvaPACS account:
     AdvaPACS gets a 200, the processing transaction is *Failed* and queued for retry in OpenHIM;
     start OpenMRS: a later retry creates the encounter. Also check a mistyped
     `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` stops after the last retry and can be re-run from the console.
-11. Ordering: sign a report, then amend it quickly while OpenMRS is down; after it's back, one
-    *final* and one *correction*.
+11. Ordering: sign a report, then amend it while OpenMRS is down; after it's back, expect one
+    *correction* with the amended text and no *final* (see "Ordering"). Sign another report with
+    OpenMRS up, then amend it: one *final* and one *correction*.
 12. Early 404: look for any first-attempt 404 on the event's own resource in OpenHIM, to see whether
     AdvaPACS sends events before it can serve the resource.
