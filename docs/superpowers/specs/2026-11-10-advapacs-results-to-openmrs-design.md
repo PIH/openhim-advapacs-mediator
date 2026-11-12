@@ -289,10 +289,10 @@ OpenHIM channels come in two kinds that handle this differently:
 
 - **Public channel**: OpenHIM doesn't check the caller at all. The mediator would send its OpenMRS
   login, and OpenHIM would pass it on to OpenMRS (`forwardAuthHeader`). This is how the existing
-  "Mediator to AdvaPACS" channel works. Not chosen, because anyone who can reach that path on the
-  OpenHIM router can use the channel (OpenMRS would still check the login), OpenHIM's log can't say
-  who called, and OpenHIM may store the forwarded header, so the OpenMRS password (Basic auth is
-  only base64) could end up in every stored transaction.
+  "Mediator to AdvaPACS" channel works. Not chosen, because OpenHIM itself wouldn't restrict who
+  can use the channel, its log couldn't say who called, and the OpenMRS login would travel in every
+  request that passes through OpenHIM. A private channel keeps the OpenMRS login out of those
+  requests.
 - **Private channel (chosen)**: OpenHIM checks the caller against its list of clients and drops
   that login; the route then adds the OpenMRS login when calling OpenMRS. This is how the existing
   "OpenMRS to Mediator Order Push" and webhook channels work on their inbound side.
