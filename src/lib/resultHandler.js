@@ -117,7 +117,13 @@ async function handleReport(ctx) {
 
   const text = mapper.reportText(report);
   ctx.conclusionDropped = text.conclusionDropped;
-  if (text.skipReason) throw new Skip(text.skipReason);
+  if (text.skipReason) {
+    const contentTypes = (Array.isArray(report.presentedForm) ? report.presentedForm : [])
+      .map((f) => (f && typeof f.contentType === 'string' ? f.contentType : null))
+      .filter(Boolean);
+    logger.warn('DiagnosticReport has no text/* presentedForm', { contentTypes });
+    throw new Skip(text.skipReason);
+  }
   if (typeof text.text !== 'string' || text.text.trim() === '') throw new Skip('no report text');
   if (!String(text.contentType || '').startsWith('text/plain')) {
     logger.warn('DiagnosticReport text is not text/plain', { contentType: text.contentType });
@@ -131,17 +137,15 @@ async function handleReport(ctx) {
 
   let accession = accessionNumber(report);
   let datePerformed;
-  if (!accession) {
-    const studyId = mapper.referenceId(Array.isArray(report.study) ? report.study[0] : null, 'ImagingStudy');
-    if (studyId) {
-      const study = await read('ImagingStudy', studyId, ctx);
-      if (study) {
-        accession = accessionNumber(study);
-        // an unusable study date is left out; radiologyapp then uses the report date
-        datePerformed = isoDate(study.started) || undefined;
-        if (study.started && !datePerformed) {
-          logger.warn('ImagingStudy has an unparseable date', { field: 'started', resourceId: studyId });
-        }
+  const studyId = mapper.referenceId(Array.isArray(report.study) ? report.study[0] : null, 'ImagingStudy');
+  if (studyId) {
+    const study = await read('ImagingStudy', studyId, ctx);
+    if (study) {
+      if (!accession) accession = accessionNumber(study);
+      // an unusable study date is left out; radiologyapp then uses the report date
+      datePerformed = isoDate(study.started) || undefined;
+      if (study.started && !datePerformed) {
+        logger.warn('ImagingStudy has an unparseable date', { field: 'started', resourceId: studyId });
       }
     }
   }

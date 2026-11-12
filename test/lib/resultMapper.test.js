@@ -38,8 +38,30 @@ describe('resultMapper', () => {
     });
     expect(r.text).toBe('plain');
   });
+  it('skips a pdf-only report', () => {
+    const r = m.reportText({ presentedForm: [{ contentType: 'application/pdf', data: b64('%PDF-1.4') }] });
+    expect(r).toEqual({ skipReason: 'no text report', conclusionDropped: false });
+  });
+  it('accepts html when it is the only text form', () => {
+    const r = m.reportText({
+      presentedForm: [
+        { contentType: 'application/pdf', data: b64('%PDF') },
+        { contentType: 'text/html', data: b64('<p>h</p>') },
+      ],
+    });
+    expect(r).toEqual({ text: '<p>h</p>', contentType: 'text/html', conclusionDropped: false });
+  });
+  it('matches text/plain case-insensitively', () => {
+    const r = m.reportText({
+      presentedForm: [
+        { contentType: 'TEXT/html', data: b64('<p>h</p>') },
+        { contentType: 'Text/Plain', data: b64('plain') },
+      ],
+    });
+    expect(r.text).toBe('plain');
+  });
   it('does not use conclusion as the report text', () => {
-    expect(m.reportText({ conclusion: 'Normal' })).toEqual({ skipReason: 'no report text', conclusionDropped: true });
+    expect(m.reportText({ conclusion: 'Normal' })).toEqual({ skipReason: 'no text report', conclusionDropped: true });
   });
   it('flags a conclusion dropped alongside presentedForm', () => {
     const r = m.reportText({ conclusion: 'Normal', presentedForm: [{ contentType: 'text/plain', data: b64('Body') }] });
@@ -47,12 +69,12 @@ describe('resultMapper', () => {
     expect(r.conclusionDropped).toBe(true);
   });
   it('returns a skip reason when the report has no text', () => {
-    expect(m.reportText({})).toEqual({ skipReason: 'no report text', conclusionDropped: false });
-    expect(m.reportText({ presentedForm: [null, { contentType: 'text/plain' }] }).skipReason).toBe('no report text');
+    expect(m.reportText({})).toEqual({ skipReason: 'no text report', conclusionDropped: false });
+    expect(m.reportText({ presentedForm: [null, { contentType: 'text/plain' }] }).skipReason).toBe('no text report');
   });
   it('does not throw on malformed reports', () => {
-    expect(m.reportText({ presentedForm: 'x', conclusion: 5 }).skipReason).toBe('no report text');
-    expect(m.reportText(null).skipReason).toBe('no report text');
+    expect(m.reportText({ presentedForm: 'x', conclusion: 5 }).skipReason).toBe('no text report');
+    expect(m.reportText(null).skipReason).toBe('no text report');
   });
 
   it('returns the single Practitioner id', () => {
@@ -87,6 +109,12 @@ describe('resultMapper', () => {
 
   it('extracts a reference id by type', () => {
     expect(m.referenceId({ reference: 'Patient/123' }, 'Patient')).toBe('123');
+    expect(m.referenceId({ reference: 'Patient/abc/_history/1' }, 'Patient')).toBe('abc');
+    expect(m.referenceId({ reference: 'https://host/fhir/R5/Patient/abc' }, 'Patient')).toBe('abc');
+    expect(m.referenceId({ reference: 'https://host/fhir/Patient/abc/_history/2' }, 'Patient')).toBe('abc');
+    expect(m.referenceId({ reference: 'Patient/abc?x=1' }, 'Patient')).toBe('abc');
+    expect(m.referenceId({ reference: 'Practitioner/abc' }, 'Patient')).toBeNull();
+    expect(m.referenceId({ reference: 'https://host/fhir/Practitioner/abc' }, 'Patient')).toBeNull();
     expect(m.referenceId({ reference: 'Practitioner/123' }, 'Patient')).toBeNull();
     expect(m.referenceId(null, 'Patient')).toBeNull();
     expect(m.referenceId({ reference: 'Patient/' }, 'Patient')).toBeNull();

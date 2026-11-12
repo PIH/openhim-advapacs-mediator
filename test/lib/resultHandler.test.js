@@ -204,6 +204,19 @@ describe('reports', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.any(String), { contentType: 'text/html' });
   });
 
+  test('skips a pdf-only report and warns with the content types only', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        identifier: [{ system: ACC_SYS, value: 'ACC1' }],
+        presentedForm: [{ contentType: 'application/pdf', data: b64('SECRET PDF') }],
+      }),
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'no text report' });
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), { contentTypes: ['application/pdf'] });
+    expect(importReport).not.toHaveBeenCalled();
+    expect(logged()).not.toContain('SECRET PDF');
+  });
+
   test('passes the radiologist uuid only when the Practitioner has the provider-uuid identifier', async () => {
     resources({
       'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
@@ -278,6 +291,34 @@ describe('reports', () => {
       reportDate: '2026-11-10T21:21:19.123Z',
       datePerformed: '2026-11-10T18:00:00.654Z',
     }));
+  });
+
+  test('takes datePerformed from the linked study even when the report has its own accession', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        identifier: [{ system: ACC_SYS, value: 'OWN' }],
+        study: [{ reference: 'ImagingStudy/st1' }],
+      }),
+      'ImagingStudy/st1': study({ started: '2026-11-01T10:00:00Z' }),
+      'Patient/p1': patient,
+    });
+    await handleEvent(reportEvent());
+    expect(importReport).toHaveBeenCalledWith(expect.objectContaining({
+      accessionNumber: 'OWN',
+      datePerformed: '2026-11-01T10:00:00.000Z',
+    }));
+  });
+
+  test('imports without datePerformed when the linked study is not found', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        identifier: [{ system: ACC_SYS, value: 'OWN' }],
+        study: [{ reference: 'ImagingStudy/st1' }],
+      }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'CREATED' });
+    expect(importReport.mock.calls[0][0]).not.toHaveProperty('datePerformed');
   });
 
   test('omits an unparseable study date from a report rather than skipping it', async () => {

@@ -25,10 +25,13 @@ function imagesAvailable(study) {
 function reportText(report) {
   const r = isObj(report) ? report : {};
   const conclusionDropped = typeof r.conclusion === 'string' && r.conclusion.length > 0;
-  const forms = arr(r.presentedForm).filter((f) => isObj(f) && typeof f.data === 'string' && f.data);
-  const chosen =
-    forms.find((f) => typeof f.contentType === 'string' && f.contentType.startsWith('text/plain')) || forms[0];
-  if (!chosen) return { skipReason: 'no report text', conclusionDropped };
+  // Only text/* forms are decoded; a PDF or other binary must never be saved as the report.
+  const forms = arr(r.presentedForm).filter(
+    (f) => isObj(f) && typeof f.data === 'string' && f.data && typeof f.contentType === 'string'
+      && f.contentType.toLowerCase().startsWith('text/')
+  );
+  const chosen = forms.find((f) => f.contentType.toLowerCase().startsWith('text/plain')) || forms[0];
+  if (!chosen) return { skipReason: 'no text report', conclusionDropped };
   return {
     text: Buffer.from(chosen.data, 'base64').toString('utf8'),
     contentType: chosen.contentType,
@@ -36,11 +39,18 @@ function reportText(report) {
   };
 }
 
+// Accepts a relative or absolute reference; returns the segment right after `Type/`,
+// ignoring a trailing /_history/<v> and any query or fragment.
 function referenceId(reference, type) {
   if (!isObj(reference) || typeof reference.reference !== 'string') return null;
-  const prefix = `${type}/`;
-  if (!reference.reference.startsWith(prefix)) return null;
-  const id = reference.reference.slice(prefix.length);
+  const path = reference.reference.split(/[?#]/)[0];
+  const parts = path.split('/');
+  const i = parts.lastIndexOf(type);
+  if (i === -1 || i + 1 >= parts.length) return null;
+  const id = parts[i + 1];
+  const rest = parts.slice(i + 2);
+  // anything other than /_history/<v> stays attached so the caller's id check rejects it
+  if (rest.length > 0 && !(rest[0] === '_history' && rest.length <= 2)) return parts.slice(i + 1).join('/');
   return id || null;
 }
 
