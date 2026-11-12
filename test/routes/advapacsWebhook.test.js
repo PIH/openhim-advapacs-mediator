@@ -1,11 +1,11 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
-jest.mock('../../src/lib/resultHandler', () => ({ handleEvent: jest.fn() }));
+jest.mock('../../src/lib/eventQueueClient', () => ({ submitEvent: jest.fn() }));
 
 const express = require('express');
 const request = require('supertest');
 const logger = require('../../src/lib/logger');
-const { handleEvent } = require('../../src/lib/resultHandler');
+const { submitEvent } = require('../../src/lib/eventQueueClient');
 const advapacsWebhookRoute = require('../../src/routes/advapacsWebhook');
 
 const EVENT = {
@@ -24,7 +24,7 @@ describe('POST /webhooks/advapacs', () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
-    handleEvent.mockResolvedValue({ outcome: 'CREATED' });
+    submitEvent.mockResolvedValue({ accepted: true, status: 200 });
     process.env.ADVAPACS_WEBHOOK_SECRET = 'test-webhook-secret';
     delete process.env.ADVAPACS_WEBHOOK_CLIENT_ID;
     app = express();
@@ -128,37 +128,33 @@ describe('POST /webhooks/advapacs', () => {
     expect(JSON.stringify(logged)).not.toContain('LS-DM');
   });
 
-  test('returns 200 with the handler\'s outcome', async () => {
-    handleEvent.mockResolvedValue({ outcome: 'SKIPPED', reason: 'status partial' });
-
+  test('acknowledges 200 once OpenHIM accepted the event', async () => {
     const response = await request(app)
       .post('/webhooks/advapacs')
       .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
       .send(EVENT);
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: 'ok', outcome: 'SKIPPED' });
-    expect(handleEvent).toHaveBeenCalledWith(EVENT);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(submitEvent).toHaveBeenCalledWith(EVENT);
   });
 
-  test('returns 500 when the handler rejects, logging only the message', async () => {
-    const failure = new Error('AdvaPACS read failed');
-    failure.config = { auth: { password: 'secret-should-not-be-logged' } };
-    handleEvent.mockRejectedValue(failure);
+  test('answers 503 when OpenHIM did not accept it, logging status or code only', async () => {
+    submitEvent.mockResolvedValue({ accepted: false, status: 401 });
 
     const response = await request(app)
       .post('/webhooks/advapacs')
       .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
       .send(EVENT);
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(503);
     expect(response.body).toEqual({ status: 'error' });
-    expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(logger.error.mock.calls[0])).not.toContain('secret-should-not-be-logged');
-    expect(JSON.stringify(logger.error.mock.calls[0])).toContain('AdvaPACS read failed');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({ status: 401 }));
+    expect(JSON.stringify(logger.warn.mock.calls[0])).not.toContain(EVENT.data.id);
   });
 
-  test('still acknowledges a TEST_EVENT without calling the handler', async () => {
+  test('still acknowledges a TEST_EVENT without submitting it', async () => {
     const response = await request(app)
       .post('/webhooks/advapacs')
       .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
@@ -166,16 +162,16 @@ describe('POST /webhooks/advapacs', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ status: 'ok' });
-    expect(handleEvent).not.toHaveBeenCalled();
+    expect(submitEvent).not.toHaveBeenCalled();
   });
 
-  test('rejects bad credentials before calling the handler', async () => {
+  test('rejects bad credentials before submitting', async () => {
     const response = await request(app)
       .post('/webhooks/advapacs')
       .set('Authorization', basicAuth('advapacs', 'wrong'))
       .send(EVENT);
 
     expect(response.status).toBe(401);
-    expect(handleEvent).not.toHaveBeenCalled();
+    expect(submitEvent).not.toHaveBeenCalled();
   });
 });

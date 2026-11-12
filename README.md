@@ -103,12 +103,27 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
 
 ```
 AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
-  --> routes/advapacsWebhook.js --> lib/resultHandler.js
+  --> routes/advapacsWebhook.js --> lib/eventQueueClient.js
+    --> OpenHIM channel "AdvaPACS Event Processing"  POST /results/advapacs-event   (private; auto-retry)
+      --> the mediator's processing endpoint --> lib/resultHandler.js
         --reads the study / report (and its Patient) from AdvaPACS--> advapacsClient.js
         --maps it (lib/resultMapper.js) and POSTs it, as JSON--> radiologyappClient.js
           --> OpenHIM channel "Mediator to OpenMRS Radiology Results"  ^/openmrs/ws/rest/v1/radiologyapp/(study|report)$
             --> OpenMRS POST /ws/rest/v1/radiologyapp/study | report
 ```
+
+**Hand-off to OpenHIM.** The webhook does not process the event itself. It
+passes it to OpenHIM's "AdvaPACS Event Processing" channel and answers
+AdvaPACS `200` once OpenHIM has answered, whatever the answer: OpenHIM has
+then stored the transaction and queued any retry. If OpenHIM rejects the
+mediator's login (401/403), has no such channel (404) or can't be reached, the
+webhook answers `503` and AdvaPACS may resend the event.
+
+**Retries.** If processing fails (OpenMRS or AdvaPACS down, say), OpenHIM
+retries the event every 5 minutes, up to 24 times (about 2 hours). A
+transaction that still fails after that shows as Failed in the OpenHIM
+console; once the cause is fixed, re-run it there (Transactions, select the
+Failed ones, Rerun).
 
 An event carries only a reference to the resource, so the handler reads the
 study or report back from AdvaPACS, finds the OpenMRS order through the
@@ -128,7 +143,8 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
   | `ADVAPACS_ACCESSION_NUMBER_SYSTEM` | Identifier system under which AdvaPACS carries our accession number; results are matched on it only. Has a default. |
   | `OPENMRS_RESULTS_CHANNEL_URL` | Address of the "Mediator to OpenMRS Radiology Results" channel as the mediator sees it (distro-tools: `http://openhim-core:5001/openmrs`). |
   | `OPENHIM_RESULTS_CLIENT_ID` | OpenHIM Client the mediator calls that channel as (default `advapacs-mediator`). |
-  | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. |
+  | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. Now needed for the hand-off to OpenHIM too. |
+  | `MEDIATOR_INBOUND_SECRET` | Shared secret the mediator sends to its own processing endpoint through OpenHIM. Now needed for results (it already protected the order endpoints). |
   | `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` | The OpenMRS patient identifier type matching `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`. Required. |
 
   `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID`, `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`
