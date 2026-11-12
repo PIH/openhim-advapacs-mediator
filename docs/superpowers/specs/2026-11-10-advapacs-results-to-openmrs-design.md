@@ -64,9 +64,12 @@ Tracked so they can be picked up later:
     retry (the next poll covers it); and it changes an order path that already works on kol-ci.
     The other direct calls (`getConceptsMappedToSource`, `getOrderBundle`) stay direct too.
 
-**Not a concern: duplicate accession numbers.** Lesotho will run one OpenMRS server shared by all
-sites, and accession numbers (order numbers) are unique within it, so production accessions can't
-collide. (Test servers sharing the AdvaPACS tenant are covered by the patient check below.)
+**Accession numbers are matched by assigning authority and number, never by number alone.** Lesotho
+will run one OpenMRS server shared by all sites, and accession numbers (order numbers) are unique
+within it. But an accession number only means "this OpenMRS order" when it was issued by that
+server, so the mediator must check the accession identifier's assigning authority (its `system`,
+and `assigner` if AdvaPACS sends one) before using its value. See "Accession number" under
+Decisions.
 
 ## Anti-goals (would make this a failure even if it "works")
 
@@ -210,6 +213,21 @@ is the natural place, since it has the order.
 > doesn't help if two sites' patients ever share an identifier. Related settings already exist:
 > `ADVAPACS_SITE_MAP` / `ADVAPACS_ORGANIZATION`.
 
+### Accession number
+
+- Use only the accession identifier (`identifier` with type `ACSN`) whose `system` is the one this
+  mediator puts on orders (`http://www.pih.org/identifiers/lesotho/radiology-accession-number`,
+  `ACCESSION_NUMBER_SYSTEM` in `orderRelay.js`). Never take a bare value, or one from another
+  system, as an OpenMRS order number.
+- If the resource has no accession with that system, skip: no encounter, a warning in the mediator
+  log (resource id, the systems seen, no values), and a 200 to AdvaPACS.
+- *(My call)* Make the expected system a setting shared with `orderRelay.js`, defaulting to today's
+  value, in case AdvaPACS returns its own NamingSystem URI instead of echoing ours. **To confirm on
+  kol-ci:** what `system` (and any `assigner`) AdvaPACS returns on the ImagingStudy's and the
+  ServiceRequest's accession identifier.
+- The endpoint is passed the order number only after this check; the patient check below still
+  applies on top.
+
 ### Visits
 
 The study and report encounters are not attached to a visit by the endpoint; the server's visit
@@ -259,10 +277,54 @@ general. The order poller and other existing OpenMRS calls stay direct (non-goal
 OpenMRS over the local/docker network and the OpenMRS credentials never cross another network. If
 they are ever split, the route needs TLS and this section needs revisiting.
 
+#### How the channel authenticates *(my call: a private channel)*
+
+Two logins are involved, and both use the same HTTP header (`Authorization: Basic ...`):
+
+1. **The mediator to OpenHIM**: is this caller allowed to use this channel?
+2. **OpenHIM to OpenMRS**: which OpenMRS user is making this change?
+
+One request can carry only one value in that header, so they can't both come from the mediator.
+OpenHIM channels come in two kinds that handle this differently:
+
+- **Public channel**: OpenHIM doesn't check the caller at all. The mediator would send its OpenMRS
+  login, and OpenHIM would pass it on to OpenMRS (`forwardAuthHeader`). This is how the existing
+  "Mediator to AdvaPACS" channel works. Not chosen, because anyone who can reach that path on the
+  OpenHIM router can use the channel (OpenMRS would still check the login), OpenHIM's log can't say
+  who called, and OpenHIM may store the forwarded header, so the OpenMRS password (Basic auth is
+  only base64) could end up in every stored transaction.
+- **Private channel (chosen)**: OpenHIM checks the caller against its list of clients and drops
+  that login; the route then adds the OpenMRS login when calling OpenMRS. This is how the existing
+  "OpenMRS to Mediator Order Push" and webhook channels work on their inbound side.
+
+So a radiologyapp call goes:
+
+```
+mediator ──(Basic: mediator's OpenHIM client id + password)──▶ OpenHIM router
+   OpenHIM: is this a known client, allowed on this channel?  no → 401
+            yes → log the transaction; remove the client's Authorization header
+OpenHIM ──(Basic: OpenMRS username + password, set on the route)──▶ OpenMRS radiologyapp endpoint
+   OpenMRS: checks that login and the user's privileges, as for any REST call
+```
+
+What it needs:
+
+- A new OpenHIM **client** for the mediator (its own id and password, kept in the mediator's
+  settings like the other OpenHIM credentials, and in puppet for kol-ci), allowed on this channel
+  only.
+- The channel: `authType: private`, `allow` = that client, `forwardAuthHeader: false`, `urlPattern`
+  covering only the radiologyapp endpoint, methods `POST` only.
+- Its route: OpenMRS's host and port on the local/docker network (see the assumption above), with
+  the route's `username`/`password` set to the mediator's existing OpenMRS account
+  (`OPENMRS_USERNAME` / `OPENMRS_PASSWORD`).
+- The mediator provisions the client, channel and route at startup, like its other channels, so a
+  changed password is picked up on restart.
+
+Trade-off accepted: the OpenMRS login is also stored in OpenHIM's channel configuration, visible to
+OpenHIM admins in the console.
+
 Points the builder must handle:
 
-- **Auth** (public or private channel): *to decide*. OpenHIM's client auth and OpenMRS's both use
-  `Authorization: Basic`, so one header can't do both.
 - **Retries.** Endpoint writes are idempotent, so retrying is safe, but use OpenHIM's `autoRetry` or
   AdvaPACS's retry (via a 5xx), not both, or an event is handled twice.
 
@@ -314,4 +376,8 @@ On kol-ci, with your own AdvaPACS account:
 7. With a radiologist whose Practitioner has the provider-UUID identifier: the report shows that
    provider; without it, the unknown provider. Same for a technician on the ImagingStudy, if
    AdvaPACS fills `series.performer`.
-8. Each radiologyapp call shows as a transaction on the new channel in OpenHIM.
+8. Each radiologyapp call shows as a transaction on the new channel in OpenHIM, under the
+   mediator's client.
+9. Check the accession identifier on a real ImagingStudy and ServiceRequest: its `system` and any
+   `assigner`. Then send (or replay with an edited body) a study whose accession has the right
+   number but a different `system`: nothing created, a warning logged.
