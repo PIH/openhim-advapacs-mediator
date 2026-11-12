@@ -140,4 +140,30 @@ describe('advapacsClient', () => {
     expect(result).toEqual({ resourceType: 'ServiceRequest', id: 'advapacs-sr1' });
   });
 
+  test('readResource reads a resource by type and id', async () => {
+    const report = { resourceType: 'DiagnosticReport', id: 'abc' };
+    mockClient.get.mockResolvedValue({ data: report });
+
+    const result = await advapacs.readResource('DiagnosticReport', 'abc');
+
+    expect(mockClient.get).toHaveBeenCalledWith('/DiagnosticReport/abc', { timeout: 30000 });
+    expect(result).toEqual(report);
+  });
+
+  test('readResource resolves null on 404', async () => {
+    const err = new Error('Request failed with status code 404');
+    err.response = { status: 404 };
+    mockClient.get.mockRejectedValue(err);
+
+    await expect(advapacs.readResource('DiagnosticReport', 'missing')).resolves.toBeNull();
+  });
+
+  test('readResource rejects on 500', async () => {
+    const err = new Error('Request failed with status code 500');
+    err.response = { status: 500 };
+    mockClient.get.mockRejectedValue(err);
+
+    await expect(advapacs.readResource('DiagnosticReport', 'abc')).rejects.toBe(err);
+  });
+
 });

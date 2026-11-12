@@ -9,10 +9,20 @@ const mediatorConfig = require('../mediatorConfig.json');
 const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
+const { RESULTS_ENV_VARS } = require('./lib/eventQueueClient');
 const advapacsWebhookRoute = require('./routes/advapacsWebhook');
+const advapacsEventRoute = require('./routes/advapacsEvent');
 const healthRoute = require('./routes/health');
 
 function startServer() {
+  // Without these, every webhook event is answered 503 (see lib/eventQueueClient).
+  for (const name of RESULTS_ENV_VARS) {
+    if (!process.env[name]) logger.error(`${name} is not set: AdvaPACS results cannot be handed to OpenHIM, so every webhook event will be answered 503`);
+  }
+  // Site configuration with no default (see lib/identifiers.js): orders, results or both fail without them.
+  for (const name of ['ADVAPACS_ACCESSION_NUMBER_SYSTEM', 'ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM']) {
+    if (!process.env[name]) logger.error(`${name} is not set: orders sent to AdvaPACS and results from it will fail until it is`);
+  }
   const app = express();
   app.use(bodyParser({ type: ['application/json', 'application/fhir+json'] }));
 
@@ -22,8 +32,12 @@ function startServer() {
   // endpoint the same way, on an interval -- see .env.example.
   app.use('/', serviceRequestRoute);
 
-  // AdvaPACS's webhook, behind OpenHIM's ^/webhooks/advapacs$ channel -- log-only for now.
+  // AdvaPACS's webhook, behind OpenHIM's ^/webhooks/advapacs$ channel; creates radiologyapp studies and reports in OpenMRS.
   app.use('/', advapacsWebhookRoute);
+
+  // Where OpenHIM's ^/results/advapacs-event$ channel routes each webhook event for processing; failures are answered
+  // as OpenHIM mediator errors so the channel's auto-retry re-runs them.
+  app.use('/', advapacsEventRoute);
 
   if (process.env.ORDER_INGESTION_MODE === 'poll') {
     orderPoller.start(Number(process.env.ORDER_POLL_INTERVAL_MS) || 60000);

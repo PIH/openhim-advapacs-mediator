@@ -62,6 +62,8 @@ describe('orderRelay', () => {
 
     process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/emr-id';
     process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/provider-uuid';
+    process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
+    process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
 
     openmrs = require('../../src/lib/openmrsClient');
     advapacs = require('../../src/lib/advapacsClient');
@@ -431,6 +433,40 @@ describe('orderRelay', () => {
         ...placerIdentifier,
         system: 'http://www.pih.org/identifiers/lesotho/radiology-order-number'
       });
+    });
+
+    test('fails the relay when ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM is not configured', async () => {
+      delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
+      try {
+        inBundle(patientWithEmrId);
+        advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+
+        await expect(relay({ ...serviceRequestWithSubject, identifier: [placerIdentifier] }))
+          .rejects.toThrow('ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM is not configured');
+        expect(advapacs.createServiceRequest).not.toHaveBeenCalled();
+      } finally {
+        process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
+      }
+    });
+
+    test('stamps the placer identifier with ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM when set', async () => {
+      process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'urn:custom-placer';
+      try {
+        inBundle(patientWithEmrId);
+        advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+        advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+        await relay({
+          ...serviceRequestWithSubject,
+          identifier: [placerIdentifier]
+        });
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.identifier).toContainEqual({ ...placerIdentifier, system: 'urn:custom-placer' });
+        expect(outboundArg.identifier).toContainEqual(expect.objectContaining({ value: 'ORD-1', type: expect.anything() }));
+      } finally {
+        process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
+      }
     });
 
     test('adds a separate accession-number identifier carrying the same value, alongside the placer identifier', async () => {

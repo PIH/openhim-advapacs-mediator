@@ -1,8 +1,11 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
+jest.mock('../../src/lib/eventQueueClient', () => ({ submitEvent: jest.fn() }));
+
 const express = require('express');
 const request = require('supertest');
 const logger = require('../../src/lib/logger');
+const { submitEvent } = require('../../src/lib/eventQueueClient');
 const advapacsWebhookRoute = require('../../src/routes/advapacsWebhook');
 
 const EVENT = {
@@ -20,7 +23,8 @@ describe('POST /webhooks/advapacs', () => {
   let app;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    submitEvent.mockResolvedValue({ accepted: true, status: 200 });
     process.env.ADVAPACS_WEBHOOK_SECRET = 'test-webhook-secret';
     delete process.env.ADVAPACS_WEBHOOK_CLIENT_ID;
     app = express();
@@ -35,7 +39,6 @@ describe('POST /webhooks/advapacs', () => {
       .send(EVENT);
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: 'ok' });
     expect(logger.info).toHaveBeenCalledWith('Received AdvaPACS webhook event', {
       eventType: 'REPORT_UPDATED',
       eventId: 'da80ed95-a33c-4526-940c-bbf277e13d50',
@@ -123,5 +126,124 @@ describe('POST /webhooks/advapacs', () => {
     expect(logged.otherDataFields).toEqual(['accession']);
     expect(JSON.stringify(logged)).not.toContain('0000010496');
     expect(JSON.stringify(logged)).not.toContain('LS-DM');
+  });
+
+  test('acknowledges 200 once OpenHIM accepted the event', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(submitEvent).toHaveBeenCalledWith(EVENT);
+  });
+
+  test('answers 503 when OpenHIM did not accept it, logging status or code only', async () => {
+    submitEvent.mockResolvedValue({ accepted: false, status: 401 });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ status: 'error' });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({ status: 401 }));
+    expect(JSON.stringify(logger.warn.mock.calls[0])).not.toContain(EVENT.data.id);
+  });
+
+  test('still acknowledges a TEST_EVENT without submitting it', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType: 'TEST_EVENT', data: {} });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(submitEvent).not.toHaveBeenCalled();
+  });
+
+  test('rejects bad credentials before submitting', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'wrong'))
+      .send(EVENT);
+
+    expect(response.status).toBe(401);
+    expect(submitEvent).not.toHaveBeenCalled();
+  });
+
+  test('forwards only the documented fields, never the raw body', async () => {
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, organisation: 'LS-DM', data: { ...EVENT.data, accession: '0000010496' } });
+
+    expect(submitEvent).toHaveBeenCalledWith(EVENT);
+  });
+
+  test('submits an event without a timestamp as it came', async () => {
+    const { timestamp, ...noTimestamp } = EVENT;
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(noTimestamp);
+
+    const submitted = submitEvent.mock.calls[0][0];
+    expect(JSON.parse(JSON.stringify(submitted))).toEqual(noTimestamp);
+  });
+
+  test('acknowledges an unsupported event type without submitting it, logging its type and id', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType: 'STUDY_UPDATED' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(submitEvent).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining('unsupported'),
+      { eventType: 'STUDY_UPDATED', eventId: EVENT.eventId }
+    );
+  });
+
+  test.each(['STUDY_CREATED', 'REPORT_CREATED', 'REPORT_UPDATED'])('submits a %s event', async (eventType) => {
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType });
+    expect(submitEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test('logs the error code, not the error, when OpenHIM could not be reached', async () => {
+    submitEvent.mockResolvedValue({ accepted: false, code: 'ECONNREFUSED' });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(503);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({ code: 'ECONNREFUSED' }));
+  });
+
+  test('answers 503 and warns with the missing variable names when results are not configured', async () => {
+    submitEvent.mockResolvedValue({
+      accepted: false, code: 'NOT_CONFIGURED', missing: ['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD']
+    });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(503);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({
+      code: 'NOT_CONFIGURED', missing: ['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD']
+    }));
   });
 });

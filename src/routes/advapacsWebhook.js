@@ -1,6 +1,8 @@
 const express = require('express');
 const logger = require('../lib/logger');
 const { timingSafeEqualStrings } = require('../lib/sharedSecretAuth');
+const { submitEvent } = require('../lib/eventQueueClient');
+const { SUPPORTED_EVENTS } = require('../lib/supportedEvents');
 
 const router = express.Router();
 
@@ -29,12 +31,13 @@ function verifyWebhookCredentials(req, res, next) {
 
 /**
  * AdvaPACS's webhook (Configuration > Webhooks), behind the OpenHIM channel ^/webhooks/advapacs$.
- * Log-only for now (UHM-9458/UHM-9459): records each event so the real event sequence and payloads
- * can be seen before anything is written to OpenMRS. An event carries only a reference to the
- * resource, e.g. { eventType: "REPORT_UPDATED", data: { type: "report", id } }. Fields the docs don't
- * describe are logged by name only, so nothing unexpected (patient details, say) reaches the logs.
+ * Logs each event, then hands it to OpenHIM's "AdvaPACS Event Processing" channel (lib/eventQueueClient),
+ * which retries it against the mediator's processing route (LSO-209). 200 means OpenHIM has the event;
+ * 503 means it didn't, so AdvaPACS may retry. An event carries only a reference to
+ * the resource, e.g. { eventType: "REPORT_UPDATED", data: { type: "report", id } }. Fields the docs
+ * don't describe are logged by name only, so nothing unexpected (patient details, say) reaches the logs.
  */
-router.post('/webhooks/advapacs', verifyWebhookCredentials, (req, res) => {
+router.post('/webhooks/advapacs', verifyWebhookCredentials, async (req, res) => {
   const event = req.body || {};
   const data = event.data || {};
   if (!event.eventType || !data.id) {
@@ -58,7 +61,33 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, (req, res) => {
     ...unexpected('otherFields', event, EVENT_FIELDS),
     ...unexpected('otherDataFields', data, DATA_FIELDS)
   });
-  res.status(200).json({ status: 'ok' });
+
+  if (!SUPPORTED_EVENTS.includes(event.eventType)) {
+    // nothing to process, so don't make an OpenHIM transaction of it
+    logger.info('Acknowledged an AdvaPACS webhook event of an unsupported type without processing it', {
+      eventType: event.eventType,
+      eventId: event.eventId
+    });
+    return res.status(200).json({ status: 'ok' });
+  }
+
+  // Hand the event to OpenHIM, which queues it and retries until the mediator has processed it. Only
+  // once OpenHIM has answered do we acknowledge AdvaPACS; otherwise a 503 makes AdvaPACS retry.
+  // Only the documented fields go on, never the raw body.
+  const submitted = { timestamp: event.timestamp, eventId: event.eventId, eventType: event.eventType, data: { type: data.type, id: data.id } };
+  const result = await submitEvent(submitted);
+  if (result.accepted) {
+    return res.status(200).json({ status: 'ok' });
+  }
+  logger.warn('OpenHIM did not accept AdvaPACS webhook event', {
+    eventType: event.eventType,
+    eventId: event.eventId,
+    status: result.status,
+    code: result.code,
+    // names of the unset variables when code is NOT_CONFIGURED
+    ...(result.missing ? { missing: result.missing } : {})
+  });
+  res.status(503).json({ status: 'error' });
 });
 
 function unexpected(name, object, known) {

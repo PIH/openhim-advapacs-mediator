@@ -93,7 +93,28 @@ async function searchLocations(identifier, organizationId) {
   return (data.entry || []).map((entry) => entry.resource);
 }
 
+/**
+ * Read a single resource (ImagingStudy, DiagnosticReport, ServiceRequest,
+ * Patient, Practitioner, ...) from AdvaPACS by type and id. Resolves null when
+ * AdvaPACS answers 404; any other error rejects. Logs only the type and id --
+ * never anything from the body, which holds patient data.
+ */
+async function readResource(resourceType, id) {
+  try {
+    const { data } = await client.get(`/${resourceType}/${id}`, { timeout: 30000 });
+    logger.info('Read resource from AdvaPACS', { resourceType, id });
+    return data;
+  } catch (err) {
+    if (err.response && err.response.status === 404) {
+      logger.info('Resource not found in AdvaPACS', { resourceType, id });
+      return null;
+    }
+    throw err;
+  }
+}
+
 module.exports = {
+  readResource,
   createServiceRequest,
   upsertPatient,
   upsertPractitioner,
