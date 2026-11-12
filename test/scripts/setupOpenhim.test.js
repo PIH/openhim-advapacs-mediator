@@ -6,6 +6,7 @@ const { main } = require('../../scripts/setupOpenhim');
 
 const WEBHOOK_CHANNEL = 'AdvaPACS to Mediator Study and Report Webhook';
 const RESULTS_CHANNEL = 'Mediator to OpenMRS Radiology Results';
+const EVENT_CHANNEL = 'AdvaPACS Event Processing';
 
 function posted(path) {
   return api.post.mock.calls.filter(([p]) => p === path).map(([, body]) => body);
@@ -120,6 +121,48 @@ describe('setupOpenhim', () => {
 
     expect(posted('/clients').map((c) => c.clientID)).toContain('mediator-results');
     expect(posted('/channels').find((c) => c.name === RESULTS_CHANNEL).allow).toEqual(['mediator-results']);
+  });
+
+  test('provisions the event processing channel with auto-retry and a 10s timeout', async () => {
+    await main();
+
+    const channel = posted('/channels').find((c) => c.name === EVENT_CHANNEL);
+    expect(channel).toMatchObject({
+      urlPattern: '^/results/advapacs-event$',
+      authType: 'private',
+      methods: ['POST'],
+      timeout: 10000,
+      autoRetryEnabled: true,
+      autoRetryPeriodMinutes: 5,
+      autoRetryMaxAttempts: 24,
+      requestBody: true,
+      responseBody: true
+    });
+    expect(channel.routes).toEqual([expect.objectContaining({
+      name: 'OpenMRS-AdvaPACS FHIR Mediator results route',
+      host: 'openhim-advapacs-mediator',
+      port: 3500,
+      primary: true,
+      forwardAuthHeader: false
+    })]);
+  });
+
+  test('allows only the results client on the event processing channel', async () => {
+    process.env.OPENHIM_RESULTS_CLIENT_ID = 'mediator-results';
+
+    await main();
+
+    expect(posted('/channels').find((c) => c.name === EVENT_CHANNEL).allow).toEqual(['mediator-results']);
+  });
+
+  test('skips the event processing channel when OPENHIM_RESULTS_CLIENT_PASSWORD is unset', async () => {
+    delete process.env.OPENHIM_RESULTS_CLIENT_PASSWORD;
+
+    await main();
+
+    expect(posted('/channels').map((c) => c.name)).not.toContain(EVENT_CHANNEL);
+    const logged = console.log.mock.calls.map(([m]) => m).join('\n');
+    expect(logged).toContain('OPENHIM_RESULTS_CLIENT_PASSWORD');
   });
 
   test.each(['OPENMRS_BASE_URL', 'OPENMRS_USERNAME', 'OPENMRS_PASSWORD'])(

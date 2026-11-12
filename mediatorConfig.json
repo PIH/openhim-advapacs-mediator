@@ -19,6 +19,14 @@
       "primary": false,
       "type": "http",
       "path": "/webhooks/advapacs"
+    },
+    {
+      "name": "AdvaPACS event processing endpoint",
+      "host": "0.0.0.0",
+      "port": "3500",
+      "primary": false,
+      "type": "http",
+      "path": "/results/advapacs-event"
     }
   ],
   "defaultChannelConfig": [
@@ -105,6 +113,30 @@
       "type": "http",
       "requestBody": true,
       "responseBody": true
+    },
+    {
+      "name": "AdvaPACS Event Processing",
+      "urlPattern": "^/results/advapacs-event$",
+      "routes": [
+        {
+          "name": "OpenMRS-AdvaPACS FHIR Mediator results route",
+          "host": "openhim-advapacs-mediator",
+          "port": 3500,
+          "primary": true,
+          "type": "http",
+          "forwardAuthHeader": false
+        }
+      ],
+      "allow": ["advapacs-mediator"],
+      "authType": "private",
+      "methods": ["POST"],
+      "type": "http",
+      "timeout": 10000,
+      "requestBody": true,
+      "responseBody": true,
+      "autoRetryEnabled": true,
+      "autoRetryPeriodMinutes": 5,
+      "autoRetryMaxAttempts": 24
     }
   ],
   "configDefs": [

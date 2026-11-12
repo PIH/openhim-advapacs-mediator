@@ -11,12 +11,14 @@ const CHANNEL_NAMES = [
   'OpenMRS to Mediator Order Push',
   'Mediator to AdvaPACS Order Push',
   'AdvaPACS to Mediator Study and Report Webhook',
-  'Mediator to OpenMRS Radiology Results'
+  'Mediator to OpenMRS Radiology Results',
+  'AdvaPACS Event Processing'
 ];
 
 const OUTBOUND_CHANNEL_NAME = 'Mediator to AdvaPACS Order Push';
 const WEBHOOK_CHANNEL_NAME = 'AdvaPACS to Mediator Study and Report Webhook';
 const RESULTS_CHANNEL_NAME = 'Mediator to OpenMRS Radiology Results';
+const EVENT_CHANNEL_NAME = 'AdvaPACS Event Processing';
 
 // The OpenHIM Client AdvaPACS calls the webhook channel as -- mediatorConfig.json's channel allows
 // "advapacs", replaced here when ADVAPACS_WEBHOOK_CLIENT_ID names another (e.g. one per instance).
@@ -60,7 +62,7 @@ function resultsClientId() {
 }
 
 function withResultsClient(channelDef) {
-  if (channelDef.name !== RESULTS_CHANNEL_NAME) return channelDef;
+  if (channelDef.name !== RESULTS_CHANNEL_NAME && channelDef.name !== EVENT_CHANNEL_NAME) return channelDef;
   return { ...channelDef, allow: [resultsClientId()] };
 }
 
@@ -206,7 +208,7 @@ async function main() {
   if (process.env.OPENHIM_RESULTS_CLIENT_PASSWORD) {
     await upsertClient(resultsClient());
   } else {
-    console.log('OPENHIM_RESULTS_CLIENT_PASSWORD not set: no results client, so the OpenMRS results channel accepts no one');
+    console.log('OPENHIM_RESULTS_CLIENT_PASSWORD not set: no results client, so the OpenMRS results channel accepts no one, and not provisioning the "' + EVENT_CHANNEL_NAME + '" channel');
   }
   const missingOpenmrs = ['OPENMRS_BASE_URL', 'OPENMRS_USERNAME', 'OPENMRS_PASSWORD'].filter((v) => !process.env[v]);
   if (missingOpenmrs.length) {
@@ -214,6 +216,7 @@ async function main() {
   }
   const channels = mediatorConfig.defaultChannelConfig
     .filter((c) => CHANNEL_NAMES.includes(c.name))
+    .filter((c) => c.name !== EVENT_CHANNEL_NAME || process.env.OPENHIM_RESULTS_CLIENT_PASSWORD)
     .filter((c) => c.name !== RESULTS_CHANNEL_NAME || !missingOpenmrs.length)
     .map(withRealAdvapacsRoute)
     .map(withRealOpenmrsRoute)
