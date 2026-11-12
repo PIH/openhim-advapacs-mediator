@@ -83,6 +83,28 @@
       "authType": "private",
       "methods": ["POST"],
       "type": "http"
+    },
+    {
+      "name": "Mediator to OpenMRS Radiology Results",
+      "urlPattern": "^/openmrs/ws/rest/v1/radiologyapp/(study|report)$",
+      "routes": [
+        {
+          "name": "OpenMRS radiologyapp",
+          "host": "openmrs",
+          "port": 8080,
+          "primary": true,
+          "type": "http",
+          "secured": false,
+          "forwardAuthHeader": false,
+          "pathTransform": "s/^\\/openmrs/\\/openmrs/"
+        }
+      ],
+      "allow": ["advapacs-mediator"],
+      "authType": "private",
+      "methods": ["POST"],
+      "type": "http",
+      "requestBody": true,
+      "responseBody": true
     }
   ],
   "configDefs": [

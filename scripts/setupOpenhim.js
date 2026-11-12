@@ -10,11 +10,13 @@ const mediatorConfig = require('../mediatorConfig.json');
 const CHANNEL_NAMES = [
   'OpenMRS to Mediator Order Push',
   'Mediator to AdvaPACS Order Push',
-  'AdvaPACS to Mediator Study and Report Webhook'
+  'AdvaPACS to Mediator Study and Report Webhook',
+  'Mediator to OpenMRS Radiology Results'
 ];
 
 const OUTBOUND_CHANNEL_NAME = 'Mediator to AdvaPACS Order Push';
 const WEBHOOK_CHANNEL_NAME = 'AdvaPACS to Mediator Study and Report Webhook';
+const RESULTS_CHANNEL_NAME = 'Mediator to OpenMRS Radiology Results';
 
 // The OpenHIM Client AdvaPACS calls the webhook channel as -- mediatorConfig.json's channel allows
 // "advapacs", replaced here when ADVAPACS_WEBHOOK_CLIENT_ID names another (e.g. one per instance).
@@ -48,6 +50,43 @@ function withRealAdvapacsRoute(channelDef) {
       port,
       secured,
       pathTransform
+    }))
+  };
+}
+
+// The OpenHIM Client the mediator calls the results channel as (Basic auth), which allows only it.
+function resultsClientId() {
+  return process.env.OPENHIM_RESULTS_CLIENT_ID || 'advapacs-mediator';
+}
+
+function withResultsClient(channelDef) {
+  if (channelDef.name !== RESULTS_CHANNEL_NAME) return channelDef;
+  return { ...channelDef, allow: [resultsClientId()] };
+}
+
+// Like withRealAdvapacsRoute: resolves the results channel's route from OPENMRS_BASE_URL, and sets
+// the OpenMRS login on the route (OpenHIM drops the mediator's own Authorization header,
+// forwardAuthHeader: false, and calls OpenMRS with these). OpenHIM and OpenMRS are assumed to run
+// on the same server, so an http OPENMRS_BASE_URL gives a plain http route on the local network.
+function withRealOpenmrsRoute(channelDef) {
+  if (channelDef.name !== RESULTS_CHANNEL_NAME) return channelDef;
+
+  const openmrsUrl = new URL(process.env.OPENMRS_BASE_URL);
+  const secured = openmrsUrl.protocol === 'https:';
+  const port = openmrsUrl.port ? Number(openmrsUrl.port) : (secured ? 443 : 80);
+  const basePath = openmrsUrl.pathname === '/' ? '' : openmrsUrl.pathname.replace(/\/$/, '');
+  const pathTransform = `s/^\\/openmrs/${basePath.replace(/\//g, '\\/')}/`;
+
+  return {
+    ...channelDef,
+    routes: channelDef.routes.map((route) => ({
+      ...route,
+      host: openmrsUrl.hostname,
+      port,
+      secured,
+      pathTransform,
+      username: process.env.OPENMRS_USERNAME,
+      password: process.env.OPENMRS_PASSWORD
     }))
   };
 }
@@ -109,6 +148,16 @@ function advapacsWebhookClient() {
   return clientWithHashedPassword(webhookClientId(), 'AdvaPACS webhook', process.env.ADVAPACS_WEBHOOK_SECRET);
 }
 
+// The Client the mediator POSTs its results to OpenMRS as, through the results channel.
+// Without OPENHIM_RESULTS_CLIENT_PASSWORD no Client is created, so that channel accepts no one.
+function resultsClient() {
+  return clientWithHashedPassword(
+    resultsClientId(),
+    'AdvaPACS mediator (results to OpenMRS)',
+    process.env.OPENHIM_RESULTS_CLIENT_PASSWORD
+  );
+}
+
 async function upsertClient(clientDef) {
   const { data: existing } = await api.get('/clients');
   const match = existing.find((c) => c.clientID === clientDef.clientID);
@@ -154,10 +203,17 @@ async function main() {
   } else {
     console.log('ADVAPACS_WEBHOOK_SECRET not set: no AdvaPACS webhook client, so the webhook channel accepts no one');
   }
+  if (process.env.OPENHIM_RESULTS_CLIENT_PASSWORD) {
+    await upsertClient(resultsClient());
+  } else {
+    console.log('OPENHIM_RESULTS_CLIENT_PASSWORD not set: no results client, so the OpenMRS results channel accepts no one');
+  }
   const channels = mediatorConfig.defaultChannelConfig
     .filter((c) => CHANNEL_NAMES.includes(c.name))
     .map(withRealAdvapacsRoute)
-    .map(withWebhookClient);
+    .map(withRealOpenmrsRoute)
+    .map(withWebhookClient)
+    .map(withResultsClient);
   for (const channel of channels) {
     await upsertChannel(channel);
   }
