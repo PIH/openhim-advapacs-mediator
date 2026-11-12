@@ -3,7 +3,5 @@ node_modules/
 .env-openmrs
 .idea/
 
-
-
 # Superpowers implementation plans are local working files; design specs (docs/superpowers/specs/) are committed
 docs/superpowers/plans/
