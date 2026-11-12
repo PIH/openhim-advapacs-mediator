@@ -28,7 +28,8 @@ describe('POST /results/advapacs-event', () => {
       .send(event);
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ status: 'ok', outcome: 'SKIPPED', reason: 'event type' });
-    expect(handleEvent).toHaveBeenCalledWith(event);
+    expect(handleEvent).toHaveBeenCalledWith(event, { isAbandoned: expect.any(Function) });
+    expect(handleEvent.mock.calls[0][1].isAbandoned()).toBe(false);
   });
 
   test('answers an OpenHIM mediator-error (503, application/json+openhim, error.message) when the handler rejects', async () => {
@@ -41,6 +42,7 @@ describe('POST /results/advapacs-event', () => {
     expect(response.headers['content-type']).toMatch(/^application\/json\+openhim/);
     const body = JSON.parse(response.text);
     expect(body['x-mediator-urn']).toBe(require('../../mediatorConfig.json').urn);
+    expect(body.response.status).toBe(503);
     expect(body.error).toEqual({ message: 'Failed to handle REPORT_CREATED event: boom' });
     expect(logger.error).toHaveBeenCalledWith(expect.any(String), { error: 'Failed to handle REPORT_CREATED event: boom' });
   });
@@ -49,5 +51,32 @@ describe('POST /results/advapacs-event', () => {
     const response = await request(app).post('/results/advapacs-event').send(event);
     expect(response.status).toBe(401);
     expect(handleEvent).not.toHaveBeenCalled();
+  });
+
+  test('isAbandoned turns true once the caller closes the connection before a response', async () => {
+    const http = require('http');
+    let isAbandoned;
+    let release;
+    handleEvent.mockImplementation((_event, options) => {
+      ({ isAbandoned } = options);
+      return new Promise((resolve) => { release = resolve; });
+    });
+    const server = app.listen(0);
+    try {
+      const req = http.request({
+        port: server.address().port, method: 'POST', path: '/results/advapacs-event',
+        headers: { 'Content-Type': 'application/json', 'X-Mediator-Secret': 'test-inbound-secret' }
+      });
+      req.on('error', () => {});
+      req.end(JSON.stringify(event));
+      while (!isAbandoned) await new Promise((r) => setTimeout(r, 5));
+      expect(isAbandoned()).toBe(false);
+      req.destroy();
+      for (let i = 0; i < 100 && !isAbandoned(); i++) await new Promise((r) => setTimeout(r, 5));
+      expect(isAbandoned()).toBe(true);
+      release({ outcome: 'CREATED' });
+    } finally {
+      server.close();
+    }
   });
 });

@@ -5,11 +5,11 @@ const logger = require('./logger');
 const { readResource } = require('./advapacsClient');
 const { importStudy, importReport } = require('./radiologyappClient');
 const mapper = require('./resultMapper');
+const { SUPPORTED_EVENTS } = require('./supportedEvents');
 const { identifierValue, accessionNumber } = require('./identifiers');
 
 const VALID_ID = /^[A-Za-z0-9\-.]{1,64}$/;
 const OUTCOMES_TO_WARN = ['NO_MATCHING_ORDER', 'PATIENT_MISMATCH'];
-const SUPPORTED_EVENTS = ['STUDY_CREATED', 'REPORT_CREATED', 'REPORT_UPDATED'];
 
 // Thrown inside the flow to end it with a deliberate skip.
 class Skip extends Error {
@@ -241,8 +241,18 @@ async function processEvent(event) {
   return reason ? { outcome, reason } : { outcome };
 }
 
-function handleEvent(event) {
-  const run = queue.then(() => processEvent(event));
+// isAbandoned() says the caller has gone (OpenHIM gave up on the route); a queued event whose caller is
+// gone is dropped before it reads anything, and OpenHIM's retry redoes it.
+function handleEvent(event, { isAbandoned = () => false } = {}) {
+  const run = queue.then(() => {
+    if (isAbandoned()) {
+      logger.info('Skipped an AdvaPACS event whose caller was gone before processing started', {
+        eventId: event && event.eventId,
+      });
+      throw new Error('caller gone before processing started');
+    }
+    return processEvent(event);
+  });
   queue = run.catch(() => {}); // a failed event must not break the chain
   return run;
 }

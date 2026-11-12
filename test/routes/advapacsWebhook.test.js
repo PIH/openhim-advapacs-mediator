@@ -174,4 +174,77 @@ describe('POST /webhooks/advapacs', () => {
     expect(response.status).toBe(401);
     expect(submitEvent).not.toHaveBeenCalled();
   });
+
+  test('forwards only the documented fields, never the raw body', async () => {
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, organisation: 'LS-DM', data: { ...EVENT.data, accession: '0000010496' } });
+
+    expect(submitEvent).toHaveBeenCalledWith(EVENT);
+  });
+
+  test('omits undefined documented fields from the submitted event', async () => {
+    const { timestamp, ...noTimestamp } = EVENT;
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(noTimestamp);
+
+    const submitted = submitEvent.mock.calls[0][0];
+    expect(Object.keys(submitted)).not.toContain('timestamp');
+    expect(submitted).toEqual(noTimestamp);
+  });
+
+  test('acknowledges an unsupported event type without submitting it, logging its type and id', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType: 'STUDY_UPDATED' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(submitEvent).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining('unsupported'),
+      { eventType: 'STUDY_UPDATED', eventId: EVENT.eventId }
+    );
+  });
+
+  test.each(['STUDY_CREATED', 'REPORT_CREATED', 'REPORT_UPDATED'])('submits a %s event', async (eventType) => {
+    await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType });
+    expect(submitEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test('logs the error code, not the error, when OpenHIM could not be reached', async () => {
+    submitEvent.mockResolvedValue({ accepted: false, code: 'ECONNREFUSED' });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(503);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({ code: 'ECONNREFUSED' }));
+  });
+
+  test('answers 503 and warns with the missing variable names when results are not configured', async () => {
+    submitEvent.mockResolvedValue({
+      accepted: false, code: 'NOT_CONFIGURED', missing: ['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD']
+    });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(503);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][1]).toEqual(expect.objectContaining({
+      code: 'NOT_CONFIGURED', missing: ['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD']
+    }));
+  });
 });

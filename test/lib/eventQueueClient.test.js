@@ -29,11 +29,19 @@ describe('eventQueueClient', () => {
       EVENT,
       expect.objectContaining({
         auth: { username: 'results-client', password: 'results-pw' },
-        headers: { 'X-Mediator-Secret': 'inbound-secret' },
-        timeout: 30000
+        headers: { 'X-Mediator-Secret': 'inbound-secret' }
       })
     );
+    expect(mockClient.post.mock.calls[0][2]).not.toHaveProperty('timeout');
+    expect(require('axios').create.mock.calls[0][0].timeout).toBe(30000);
   });
+
+  test.each(['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD'])(
+    'does not call OpenHIM, and reports NOT_CONFIGURED, when %s is unset', async (name) => {
+      delete process.env[name];
+      await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: false, code: 'NOT_CONFIGURED', missing: [name] });
+      expect(mockClient.post).not.toHaveBeenCalled();
+    });
 
   test('defaults the client id to advapacs-mediator', async () => {
     delete process.env.OPENHIM_RESULTS_CLIENT_ID;

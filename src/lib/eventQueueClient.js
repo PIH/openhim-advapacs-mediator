@@ -5,6 +5,9 @@ const logger = require('./logger');
 // validateStatus accepts every status: we judge the answer ourselves.
 const client = axios.create({ timeout: 30000, validateStatus: () => true });
 
+// Both are needed to hand an event to OpenHIM; without them every event would only get a 401.
+const RESULTS_ENV_VARS = ['MEDIATOR_INBOUND_SECRET', 'OPENHIM_RESULTS_CLIENT_PASSWORD'];
+
 // Accepted = a 2xx, or a 5xx: OpenHIM routed the event, stored the transaction and queued any retry
 // (500 on a route timeout or connection error, 503 mediator-error, 504). Every 4xx (401/403 login or
 // access, 404 no channel, 400/413/429...) means OpenHIM did not take it, and OpenHIM does not retry those.
@@ -17,17 +20,18 @@ function isAccepted(status) {
  * mediator's processing endpoint with auto-retry. A 2xx or 5xx answer means OpenHIM stored
  * the transaction (and queued a retry if the route failed), so the event is accepted; any 4xx is not. Never throws and
  * never returns an axios object (they carry the password and the event body).
- * Resolves {accepted, status?, code?}.
+ * Resolves {accepted, status?, code?, missing?} (missing: names of unset variables, with code NOT_CONFIGURED).
  */
 async function submitEvent(event) {
+  const missing = RESULTS_ENV_VARS.filter((name) => !process.env[name]);
+  if (missing.length) return { accepted: false, code: 'NOT_CONFIGURED', missing };
   try {
     const { status } = await client.post(`${process.env.OPENHIM_ROUTER_URL}/results/advapacs-event`, event, {
       auth: {
         username: process.env.OPENHIM_RESULTS_CLIENT_ID || 'advapacs-mediator',
         password: process.env.OPENHIM_RESULTS_CLIENT_PASSWORD
       },
-      headers: { 'X-Mediator-Secret': process.env.MEDIATOR_INBOUND_SECRET },
-      timeout: 30000
+      headers: { 'X-Mediator-Secret': process.env.MEDIATOR_INBOUND_SECRET }
     });
     const accepted = isAccepted(status);
     if (accepted && status >= 300) {
@@ -41,4 +45,4 @@ async function submitEvent(event) {
   }
 }
 
-module.exports = { submitEvent };
+module.exports = { submitEvent, RESULTS_ENV_VARS };

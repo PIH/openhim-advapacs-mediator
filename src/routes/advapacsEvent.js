@@ -19,8 +19,12 @@ const verifyInboundSecret = requireSharedSecret({
  * A handled or skipped event is a 200; a failure is answered as an OpenHIM mediator error so OpenHIM retries it.
  */
 router.post('/results/advapacs-event', verifyInboundSecret, async (req, res) => {
+  // OpenHIM gives up on the route after 10s but the request stays queued; res 'close' without a finished
+  // response means the caller is gone (req 'close' fires once the body is read, so it can't be used).
+  let abandoned = false;
+  res.on('close', () => { if (!res.writableEnded) abandoned = true; });
   try {
-    const { outcome, reason } = await handleEvent(req.body);
+    const { outcome, reason } = await handleEvent(req.body, { isAbandoned: () => abandoned });
     res.status(200).json(reason ? { status: 'ok', outcome, reason } : { status: 'ok', outcome });
   } catch (err) {
     // the message only, never the error object (it can carry credentials) or any patient details

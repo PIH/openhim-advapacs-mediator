@@ -354,6 +354,33 @@ describe('reports', () => {
 });
 
 describe('failures and ordering', () => {
+  test('skips an event whose caller is gone before its turn, without reading AdvaPACS', async () => {
+    let release;
+    readResource.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const first = handleEvent(reportEvent('r1'));
+    let abandoned = false;
+    const second = handleEvent(reportEvent('r2'), { isAbandoned: () => abandoned }).catch((e) => e);
+    await new Promise((resolve) => setImmediate(resolve)); // the first event is now waiting on AdvaPACS
+    abandoned = true;
+    release(null);
+    await first.catch(() => {});
+    const rejection = await second;
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection.message).toBe('caller gone before processing started');
+    expect(readResource).toHaveBeenCalledTimes(1);
+    expect(readResource).not.toHaveBeenCalledWith('DiagnosticReport', 'r2', expect.anything());
+    expect(importReport).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.info.mock.calls)).toContain('e2');
+  });
+
+  test('processes normally when the caller is still there', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent(), { isAbandoned: () => false })).resolves.toEqual({ outcome: 'CREATED' });
+  });
+
   test("rejects when the event's own resource is not found, so OpenHIM retries it", async () => {
     readResource.mockResolvedValue(null);
     await expect(handleEvent(reportEvent())).rejects.toThrow('DiagnosticReport r1 not found');

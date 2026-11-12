@@ -2,6 +2,7 @@ const express = require('express');
 const logger = require('../lib/logger');
 const { timingSafeEqualStrings } = require('../lib/sharedSecretAuth');
 const { submitEvent } = require('../lib/eventQueueClient');
+const { SUPPORTED_EVENTS } = require('../lib/supportedEvents');
 
 const router = express.Router();
 
@@ -61,9 +62,23 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, async (req, res) => 
     ...unexpected('otherDataFields', data, DATA_FIELDS)
   });
 
+  if (!SUPPORTED_EVENTS.includes(event.eventType)) {
+    // nothing to process, so don't make an OpenHIM transaction of it
+    logger.info('Acknowledged an AdvaPACS webhook event of an unsupported type without processing it', {
+      eventType: event.eventType,
+      eventId: event.eventId
+    });
+    return res.status(200).json({ status: 'ok' });
+  }
+
   // Hand the event to OpenHIM, which queues it and retries until the mediator has processed it. Only
   // once OpenHIM has answered do we acknowledge AdvaPACS; otherwise a 503 makes AdvaPACS retry.
-  const result = await submitEvent(event);
+  // Only the documented fields go on, never the raw body.
+  const submitted = { timestamp: event.timestamp, eventId: event.eventId, eventType: event.eventType, data: { type: data.type, id: data.id } };
+  for (const object of [submitted, submitted.data]) {
+    for (const key of Object.keys(object)) if (object[key] === undefined) delete object[key];
+  }
+  const result = await submitEvent(submitted);
   if (result.accepted) {
     return res.status(200).json({ status: 'ok' });
   }
@@ -71,7 +86,9 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, async (req, res) => 
     eventType: event.eventType,
     eventId: event.eventId,
     status: result.status,
-    code: result.code
+    code: result.code,
+    // names of the unset variables when code is NOT_CONFIGURED
+    ...(result.missing ? { missing: result.missing } : {})
   });
   res.status(503).json({ status: 'error' });
 });

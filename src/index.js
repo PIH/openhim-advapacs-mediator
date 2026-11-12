@@ -9,11 +9,16 @@ const mediatorConfig = require('../mediatorConfig.json');
 const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
+const { RESULTS_ENV_VARS } = require('./lib/eventQueueClient');
 const advapacsWebhookRoute = require('./routes/advapacsWebhook');
 const advapacsEventRoute = require('./routes/advapacsEvent');
 const healthRoute = require('./routes/health');
 
 function startServer() {
+  // Without these, every webhook event is answered 503 (see lib/eventQueueClient).
+  for (const name of RESULTS_ENV_VARS) {
+    if (!process.env[name]) logger.error(`${name} is not set: AdvaPACS results cannot be handed to OpenHIM, so every webhook event will be answered 503`);
+  }
   const app = express();
   app.use(bodyParser({ type: ['application/json', 'application/fhir+json'] }));
 
