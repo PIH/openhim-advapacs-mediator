@@ -433,6 +433,26 @@ describe('orderRelay', () => {
       });
     });
 
+    test('stamps the placer identifier with ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM when set', async () => {
+      process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'urn:custom-placer';
+      try {
+        inBundle(patientWithEmrId);
+        advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });
+        advapacs.createServiceRequest.mockResolvedValue({ id: 'advapacs-sr-1' });
+
+        await relay({
+          ...serviceRequestWithSubject,
+          identifier: [placerIdentifier]
+        });
+
+        const [outboundArg] = advapacs.createServiceRequest.mock.calls[0];
+        expect(outboundArg.identifier).toContainEqual({ ...placerIdentifier, system: 'urn:custom-placer' });
+        expect(outboundArg.identifier).toContainEqual(expect.objectContaining({ value: 'ORD-1', type: expect.anything() }));
+      } finally {
+        delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
+      }
+    });
+
     test('adds a separate accession-number identifier carrying the same value, alongside the placer identifier', async () => {
       inBundle(patientWithEmrId);
       advapacs.upsertPatient.mockResolvedValue({ id: 'advapacs-patient-1' });

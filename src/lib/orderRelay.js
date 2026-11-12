@@ -4,14 +4,12 @@ const advapacs = require('./advapacsClient');
 const { resolveSite } = require('./siteLocation');
 const { readOrder } = require('./orderBundle');
 const modalityMap = require('./modalityMap');
-const { accessionNumberSystem } = require('./identifiers');
+const { accessionNumberSystem, placerOrderNumberSystem } = require('./identifiers');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
 const ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
 const ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM;
-
-const PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
 
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/v2-0203';
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = 'PI';
@@ -142,13 +140,14 @@ async function orderBundleFor(input) {
 // HL7 "ACSN" type coding) alongside it -- AdvaPACS expects the accession
 // number as its own identifier
 function withAccessionNumber(identifiers = []) {
+  const placerSystem = placerOrderNumberSystem();
   const stamped = identifiers.map((identifier) => {
     const isPlacer = identifier.type && identifier.type.coding &&
       identifier.type.coding.some((coding) => coding.code === 'PLAC');
-    return isPlacer ? { ...identifier, system: PLACER_ORDER_NUMBER_SYSTEM } : identifier;
+    return isPlacer ? { ...identifier, system: placerSystem } : identifier;
   });
 
-  const placer = stamped.find((identifier) => identifier.system === PLACER_ORDER_NUMBER_SYSTEM);
+  const placer = stamped.find((identifier) => identifier.system === placerSystem);
   return placer
     ? [...stamped, {
       system: accessionNumberSystem(),

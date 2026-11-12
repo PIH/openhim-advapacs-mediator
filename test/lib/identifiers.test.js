@@ -5,11 +5,22 @@ describe('identifiers', () => {
   beforeEach(() => {
     jest.resetModules();
     delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
     identifiers = require('../../src/lib/identifiers');
   });
 
   afterEach(() => {
     delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
+  });
+
+  it('defaults the placer order number system', () => {
+    expect(identifiers.placerOrderNumberSystem()).toBe('http://www.pih.org/identifiers/lesotho/radiology-order-number');
+  });
+
+  it('uses ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM when set', () => {
+    process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM = 'urn:custom-placer';
+    expect(identifiers.placerOrderNumberSystem()).toBe('urn:custom-placer');
   });
 
   it('returns the accession with our system', () => {
