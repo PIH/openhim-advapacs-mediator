@@ -2,7 +2,7 @@
   "urn": "urn:mediator:openmrs-advapacs-fhir",
   "version": "0.1.0",
   "name": "OpenMRS-AdvaPACS FHIR Mediator",
-  "description": "Routes radiology ServiceRequests from OpenMRS to AdvaPACS, and receives AdvaPACS's webhook events (for now only logged).",
+  "description": "Routes radiology ServiceRequests from OpenMRS to AdvaPACS, and receives AdvaPACS's webhook events and creates the matching radiologyapp studies and reports in OpenMRS.",
   "endpoints": [
     {
       "name": "Order Push endpoint",

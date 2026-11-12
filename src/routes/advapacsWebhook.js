@@ -1,6 +1,7 @@
 const express = require('express');
 const logger = require('../lib/logger');
 const { timingSafeEqualStrings } = require('../lib/sharedSecretAuth');
+const { handleEvent } = require('../lib/resultHandler');
 
 const router = express.Router();
 
@@ -29,12 +30,13 @@ function verifyWebhookCredentials(req, res, next) {
 
 /**
  * AdvaPACS's webhook (Configuration > Webhooks), behind the OpenHIM channel ^/webhooks/advapacs$.
- * Log-only for now (UHM-9458/UHM-9459): records each event so the real event sequence and payloads
- * can be seen before anything is written to OpenMRS. An event carries only a reference to the
- * resource, e.g. { eventType: "REPORT_UPDATED", data: { type: "report", id } }. Fields the docs don't
- * describe are logged by name only, so nothing unexpected (patient details, say) reaches the logs.
+ * Logs each event, then hands it to lib/resultHandler, which creates the radiologyapp study or report
+ * in OpenMRS (LSO-209). 200 means the event was handled or deliberately skipped; 500 means AdvaPACS or
+ * OpenMRS failed (or config is missing), so AdvaPACS may retry. An event carries only a reference to
+ * the resource, e.g. { eventType: "REPORT_UPDATED", data: { type: "report", id } }. Fields the docs
+ * don't describe are logged by name only, so nothing unexpected (patient details, say) reaches the logs.
  */
-router.post('/webhooks/advapacs', verifyWebhookCredentials, (req, res) => {
+router.post('/webhooks/advapacs', verifyWebhookCredentials, async (req, res) => {
   const event = req.body || {};
   const data = event.data || {};
   if (!event.eventType || !data.id) {
@@ -58,7 +60,20 @@ router.post('/webhooks/advapacs', verifyWebhookCredentials, (req, res) => {
     ...unexpected('otherFields', event, EVENT_FIELDS),
     ...unexpected('otherDataFields', data, DATA_FIELDS)
   });
-  res.status(200).json({ status: 'ok' });
+
+  try {
+    const { outcome } = await handleEvent(event);
+    res.status(200).json({ status: 'ok', outcome });
+  } catch (err) {
+    // The handler's errors are plain and safe to log by message; never log the object itself.
+    logger.error('Failed to process AdvaPACS webhook event', {
+      eventType: event.eventType,
+      eventId: event.eventId,
+      resourceId: data.id,
+      error: err && err.message
+    });
+    res.status(500).json({ status: 'error' });
+  }
 });
 
 function unexpected(name, object, known) {

@@ -1,8 +1,11 @@
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
+jest.mock('../../src/lib/resultHandler', () => ({ handleEvent: jest.fn() }));
+
 const express = require('express');
 const request = require('supertest');
 const logger = require('../../src/lib/logger');
+const { handleEvent } = require('../../src/lib/resultHandler');
 const advapacsWebhookRoute = require('../../src/routes/advapacsWebhook');
 
 const EVENT = {
@@ -20,7 +23,8 @@ describe('POST /webhooks/advapacs', () => {
   let app;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    handleEvent.mockResolvedValue({ outcome: 'CREATED' });
     process.env.ADVAPACS_WEBHOOK_SECRET = 'test-webhook-secret';
     delete process.env.ADVAPACS_WEBHOOK_CLIENT_ID;
     app = express();
@@ -35,7 +39,6 @@ describe('POST /webhooks/advapacs', () => {
       .send(EVENT);
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: 'ok' });
     expect(logger.info).toHaveBeenCalledWith('Received AdvaPACS webhook event', {
       eventType: 'REPORT_UPDATED',
       eventId: 'da80ed95-a33c-4526-940c-bbf277e13d50',
@@ -123,5 +126,56 @@ describe('POST /webhooks/advapacs', () => {
     expect(logged.otherDataFields).toEqual(['accession']);
     expect(JSON.stringify(logged)).not.toContain('0000010496');
     expect(JSON.stringify(logged)).not.toContain('LS-DM');
+  });
+
+  test('returns 200 with the handler\'s outcome', async () => {
+    handleEvent.mockResolvedValue({ outcome: 'SKIPPED', reason: 'status partial' });
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok', outcome: 'SKIPPED' });
+    expect(handleEvent).toHaveBeenCalledWith(EVENT);
+  });
+
+  test('returns 500 when the handler rejects, logging only the message', async () => {
+    const failure = new Error('AdvaPACS read failed');
+    failure.config = { auth: { password: 'secret-should-not-be-logged' } };
+    handleEvent.mockRejectedValue(failure);
+
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send(EVENT);
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ status: 'error' });
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(logger.error.mock.calls[0])).not.toContain('secret-should-not-be-logged');
+    expect(JSON.stringify(logger.error.mock.calls[0])).toContain('AdvaPACS read failed');
+  });
+
+  test('still acknowledges a TEST_EVENT without calling the handler', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'test-webhook-secret'))
+      .send({ ...EVENT, eventType: 'TEST_EVENT', data: {} });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(handleEvent).not.toHaveBeenCalled();
+  });
+
+  test('rejects bad credentials before calling the handler', async () => {
+    const response = await request(app)
+      .post('/webhooks/advapacs')
+      .set('Authorization', basicAuth('advapacs', 'wrong'))
+      .send(EVENT);
+
+    expect(response.status).toBe(401);
+    expect(handleEvent).not.toHaveBeenCalled();
   });
 });

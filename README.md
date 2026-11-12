@@ -72,7 +72,8 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
   --strips /openhim-router--> OpenHIM router :5001, channel "AdvaPACS to Mediator Study and Report Webhook"  ^/webhooks/advapacs$
     (authType private: only the "advapacs" OpenHIM Client; forwards the Authorization header)
     --routes to--> mediator's POST /webhooks/advapacs (routes/advapacsWebhook.js): checks the
-                   credentials again, then logs the event
+                   credentials again, logs the event, then hands it to
+                   lib/resultHandler.js (see "Results to OpenMRS")
 ```
 
 - **Credentials.** AdvaPACS calls the channel as an OpenHIM Client: in the
@@ -97,6 +98,56 @@ AdvaPACS ──HTTPS POST, Basic auth──▶ reverse proxy (Caddy)  /openhim-r
   without an `eventType` and `data.id`, like the one AdvaPACS's webhook
   test sends, still gets a 200 (AdvaPACS rejects the webhook otherwise) and is
   logged as a warning, with its field names only.
+
+## Results to OpenMRS
+
+```
+AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
+  --> routes/advapacsWebhook.js --> lib/resultHandler.js
+        --reads the study / report (and its Patient) from AdvaPACS--> advapacsClient.js
+        --maps it (lib/resultMapper.js) and POSTs it, as JSON--> radiologyappClient.js
+          --> OpenHIM channel "Mediator to OpenMRS Radiology Results"  ^/openmrs/ws/rest/v1/radiologyapp/(study|report)$
+            --> OpenMRS POST /ws/rest/v1/radiologyapp/study | report
+```
+
+An event carries only a reference to the resource, so the handler reads the
+study or report back from AdvaPACS, finds the OpenMRS order through the
+radiology accession number (the order number), and has radiologyapp create a
+Radiology Study encounter (for a study) or a Radiology Report encounter (for a
+`final` report as type *final*, for `amended` / `corrected` as type
+*correction*).
+
+- **Required OpenMRS version.** A radiologyapp with the
+  `/ws/rest/v1/radiologyapp/study` and `/report` endpoints: the
+  2.0.0-SNAPSHOT build from branch LSO-209 of `openmrs-module-radiologyapp`.
+  Earlier releases have no REST API, so every import would fail.
+- **Settings** (see `.env.example`):
+
+  | Variable | Purpose |
+  |---|---|
+  | `ADVAPACS_ACCESSION_NUMBER_SYSTEM` | Identifier system under which AdvaPACS carries our accession number; results are matched on it only. Has a default. |
+  | `OPENMRS_RESULTS_CHANNEL_URL` | Address of the "Mediator to OpenMRS Radiology Results" channel as the mediator sees it (distro-tools: `http://openhim-core:5001/openmrs`). |
+  | `OPENHIM_RESULTS_CLIENT_ID` | OpenHIM Client the mediator calls that channel as (default `advapacs-mediator`). |
+  | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. |
+  | `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` | The OpenMRS patient identifier type matching `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`. Required. |
+
+  `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM` and
+  `ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM` are now also used for results, to
+  find the patient and the report's radiologist in OpenMRS.
+- **OpenMRS user privileges.** The channel calls OpenMRS as `OPENMRS_USERNAME`,
+  which needs the core privileges `Add Encounters`, `Add Observations`,
+  `Get Orders`, `Get Patients`, `Get Providers`, `Get Concepts` and
+  `Get Encounters`, plus whatever radiologyapp itself requires.
+- **Same server.** The channel's route goes to `openmrs:8080`, so it assumes
+  OpenHIM and OpenMRS run on the same server (same Docker network).
+- **One event at a time.** The handler processes events one at a time, in
+  arrival order, so two final events for one report can't both create it.
+- **200 vs. 5xx.** Handled and deliberately skipped events get a 200 with
+  `{"status":"ok","outcome":...}`: a report that isn't final yet, no matching
+  order, a patient mismatch, a result that already exists, an unsupported event
+  type. A failure of AdvaPACS or OpenMRS, or missing configuration, gets a 500
+  `{"status":"error"}` (details only in the mediator's log), so AdvaPACS can
+  retry. Logs never include patient identifiers or report text.
 
 ## Upgrading to the single-request poll
 
@@ -436,5 +487,5 @@ src/lib/orderRelay.js       Shared order-relay logic: upserts Patient first, the
 src/lib/orderPoller.js      Poll-based ingestion (ORDER_INGESTION_MODE=poll) -- submits via OpenHIM's inbound channel
 src/lib/sharedSecretAuth.js Shared-secret Express middleware factory (crypto.timingSafeEqual compare) -- backs the inbound X-Mediator-Secret check
 src/routes/serviceRequest.js       Inbound channel's target; always mounted regardless of ingestion mode; requires X-Mediator-Secret
-src/routes/advapacsWebhook.js      Webhook channel's target; checks the AdvaPACS Client's Basic auth credentials, then logs the event (log-only for now)
+src/routes/advapacsWebhook.js      Webhook channel's target; checks the AdvaPACS Client's Basic auth credentials, logs the event, then has resultHandler.js import it into OpenMRS
 ```

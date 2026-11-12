@@ -22,7 +22,7 @@ function startServer() {
   // endpoint the same way, on an interval -- see .env.example.
   app.use('/', serviceRequestRoute);
 
-  // AdvaPACS's webhook, behind OpenHIM's ^/webhooks/advapacs$ channel -- log-only for now.
+  // AdvaPACS's webhook, behind OpenHIM's ^/webhooks/advapacs$ channel; creates radiologyapp studies and reports in OpenMRS.
   app.use('/', advapacsWebhookRoute);
 
   if (process.env.ORDER_INGESTION_MODE === 'poll') {
