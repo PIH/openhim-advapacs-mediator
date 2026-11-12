@@ -8,7 +8,8 @@ const mapper = require('./resultMapper');
 const { identifierValue, accessionNumber } = require('./identifiers');
 
 const VALID_ID = /^[A-Za-z0-9\-.]{1,64}$/;
-const OUTCOMES_TO_WARN = ['NO_MATCHING_ORDER', 'PATIENT_MISMATCH', 'ALREADY_EXISTS'];
+const OUTCOMES_TO_WARN = ['NO_MATCHING_ORDER', 'PATIENT_MISMATCH'];
+const SUPPORTED_EVENTS = ['STUDY_CREATED', 'REPORT_CREATED', 'REPORT_UPDATED'];
 
 // Thrown inside the flow to end it with a deliberate skip.
 class Skip extends Error {
@@ -27,6 +28,15 @@ function safeError(err) {
   if (err && err.status) out.status = err.status;
   if (err && err.code) out.code = err.code;
   return out;
+}
+
+// OpenMRS's date conversion rejects what AdvaPACS may send (microsecond fractions, partial dates), so every
+// date is parsed here and sent as an ISO string. Returns null for a missing or unparseable value; a bare
+// year or year-month has no time and is unparseable too.
+function isoDate(value) {
+  if (typeof value !== 'string' || /^\d{4}(-\d{2})?$/.test(value.trim())) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 async function read(type, id, ctx) {
@@ -75,6 +85,11 @@ async function handleStudy(ctx) {
   ctx.status = study.status;
   const skipReason = mapper.studySkipReason(study);
   if (skipReason) throw new Skip(skipReason);
+  const datePerformed = isoDate(study.started);
+  if (!datePerformed) {
+    logger.warn('ImagingStudy has a missing or unparseable date', { field: 'started', resourceId: ctx.resourceId });
+    throw new Skip('unparseable started');
+  }
   const accession = accessionNumber(study);
   if (!accession) throw noAccession(ctx);
   ctx.accession = accession;
@@ -83,7 +98,7 @@ async function handleStudy(ctx) {
 
   const body = {
     accessionNumber: accession,
-    datePerformed: study.started,
+    datePerformed,
     patientIdentifierTypeUuid: process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID,
     patientIdentifier: patientId,
   };
@@ -108,6 +123,12 @@ async function handleReport(ctx) {
     logger.warn('DiagnosticReport text is not text/plain', { contentType: text.contentType });
   }
 
+  const reportDate = isoDate(report.issued);
+  if (!reportDate) {
+    logger.warn('DiagnosticReport has a missing or unparseable date', { field: 'issued', resourceId: ctx.resourceId });
+    throw new Skip(report.issued ? 'unparseable issued' : 'no issued');
+  }
+
   let accession = accessionNumber(report);
   let datePerformed;
   if (!accession) {
@@ -116,7 +137,11 @@ async function handleReport(ctx) {
       const study = await read('ImagingStudy', studyId, ctx);
       if (study) {
         accession = accessionNumber(study);
-        if (study.started) datePerformed = study.started;
+        // an unusable study date is left out; radiologyapp then uses the report date
+        datePerformed = isoDate(study.started) || undefined;
+        if (study.started && !datePerformed) {
+          logger.warn('ImagingStudy has an unparseable date', { field: 'started', resourceId: studyId });
+        }
       }
     }
   }
@@ -135,7 +160,7 @@ async function handleReport(ctx) {
 
   const body = {
     accessionNumber: accession,
-    reportDate: report.issued,
+    reportDate,
     reportType,
     reportBody: text.text,
     patientIdentifierTypeUuid: process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID,
@@ -147,12 +172,6 @@ async function handleReport(ctx) {
 }
 
 async function processEvent(event) {
-  if (!process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID) {
-    throw new Error('OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID is not configured');
-  }
-  if (!process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM) {
-    throw new Error('ADVAPACS_PATIENT_IDENTIFIER_SYSTEM is not configured');
-  }
   const eventType = event && event.eventType;
   const eventId = event && event.eventId;
   const ctx = {
@@ -162,12 +181,18 @@ async function processEvent(event) {
   let result;
   let reason;
   try {
+    if (!SUPPORTED_EVENTS.includes(eventType)) throw new Skip('event type');
+    for (const name of [
+      'OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID',
+      'ADVAPACS_PATIENT_IDENTIFIER_SYSTEM',
+      'OPENMRS_RESULTS_CHANNEL_URL',
+    ]) {
+      if (!process.env[name]) throw new Error(`${name} is not configured`);
+    }
     if (eventType === 'STUDY_CREATED') {
       result = await handleStudy(ctx);
-    } else if (eventType === 'REPORT_CREATED' || eventType === 'REPORT_UPDATED') {
-      result = await handleReport(ctx);
     } else {
-      throw new Skip('event type');
+      result = await handleReport(ctx);
     }
   } catch (err) {
     if (!(err instanceof Skip)) {

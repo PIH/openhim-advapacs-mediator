@@ -42,6 +42,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID = TYPE_UUID;
   process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = PAT_SYS;
+  process.env.OPENMRS_RESULTS_CHANNEL_URL = 'http://openhim:5001/openmrs';
   process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = PRAC_SYS;
   delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
   importStudy.mockResolvedValue({ outcome: 'CREATED' });
@@ -58,13 +59,27 @@ describe('studies', () => {
     await expect(handleEvent(studyEvent)).resolves.toEqual({ outcome: 'CREATED' });
     expect(importStudy).toHaveBeenCalledWith({
       accessionNumber: 'ACC1',
-      datePerformed: '2026-11-01T10:00:00Z',
+      datePerformed: '2026-11-01T10:00:00.000Z',
       imagesAvailable: true,
       technicianProviderUuid: 'tech-uuid',
       patientIdentifierTypeUuid: TYPE_UUID,
       patientIdentifier: 'EMR-SECRET-1',
     });
   });
+
+  test('normalises a microsecond started to an ISO string', async () => {
+    resources({ 'ImagingStudy/st1': study({ started: '2026-11-10T21:21:19.123456Z' }), 'Patient/p1': patient });
+    await handleEvent(studyEvent);
+    expect(importStudy).toHaveBeenCalledWith(expect.objectContaining({ datePerformed: '2026-11-10T21:21:19.123Z' }));
+  });
+
+  test.each([['2026-11'], ['2026'], ['garbage']])(
+    'skips a study whose started is %p', async (started) => {
+      resources({ 'ImagingStudy/st1': study({ started }), 'Patient/p1': patient });
+      await expect(handleEvent(studyEvent)).resolves.toEqual({ outcome: 'SKIPPED', reason: 'unparseable started' });
+      expect(importStudy).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ field: 'started' }));
+    });
 
   test('skips a study with 0 instances without calling OpenMRS', async () => {
     resources({ 'ImagingStudy/st1': study({ numberOfInstances: 0 }) });
@@ -120,11 +135,11 @@ describe('reports', () => {
     await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'CREATED' });
     expect(importReport).toHaveBeenCalledWith({
       accessionNumber: 'ACC1',
-      reportDate: '2026-11-02T09:00:00Z',
+      reportDate: '2026-11-02T09:00:00.000Z',
       reportType: 'final',
       reportBody: 'SECRET REPORT TEXT',
       radiologistProviderUuid: 'rad-uuid',
-      datePerformed: '2026-11-01T10:00:00Z',
+      datePerformed: '2026-11-01T10:00:00.000Z',
       patientIdentifierTypeUuid: TYPE_UUID,
       patientIdentifier: 'EMR-SECRET-1',
     });
@@ -208,6 +223,72 @@ describe('reports', () => {
     await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'PATIENT_MISMATCH' });
     expect(JSON.stringify(logger.warn.mock.calls)).toContain('PATIENT_MISMATCH');
   });
+
+  test('logs ALREADY_EXISTS at info, not warn', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
+      'Patient/p1': patient,
+    });
+    importReport.mockResolvedValue({ outcome: 'ALREADY_EXISTS' });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'ALREADY_EXISTS' });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('ALREADY_EXISTS');
+    expect(JSON.stringify(logger.info.mock.calls)).toContain('ALREADY_EXISTS');
+  });
+
+  test('warns for NO_MATCHING_ORDER', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
+      'Patient/p1': patient,
+    });
+    importReport.mockResolvedValue({ outcome: 'NO_MATCHING_ORDER' });
+    await handleEvent(reportEvent());
+    expect(JSON.stringify(logger.warn.mock.calls)).toContain('NO_MATCHING_ORDER');
+  });
+
+  test('skips a final report with no issued date, warning with the field name only', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }], issued: undefined }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'no issued' });
+    expect(importReport).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ field: 'issued' }));
+  });
+
+  test('skips a report with an unparseable issued date', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }], issued: 'garbage' }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'unparseable issued' });
+    expect(importReport).not.toHaveBeenCalled();
+  });
+
+  test('normalises microsecond dates to ISO strings', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        issued: '2026-11-10T21:21:19.123456Z',
+        study: [{ reference: 'ImagingStudy/st1' }],
+      }),
+      'ImagingStudy/st1': study({ started: '2026-11-10T20:00:00.654321+02:00' }),
+      'Patient/p1': patient,
+    });
+    await handleEvent(reportEvent());
+    expect(importReport).toHaveBeenCalledWith(expect.objectContaining({
+      reportDate: '2026-11-10T21:21:19.123Z',
+      datePerformed: '2026-11-10T18:00:00.654Z',
+    }));
+  });
+
+  test('omits an unparseable study date from a report rather than skipping it', async () => {
+    resources({
+      'DiagnosticReport/r1': report({ study: [{ reference: 'ImagingStudy/st1' }] }),
+      'ImagingStudy/st1': study({ started: '2026-11' }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'CREATED' });
+    expect(importReport.mock.calls[0][0]).not.toHaveProperty('datePerformed');
+  });
 });
 
 describe('failures and ordering', () => {
@@ -245,6 +326,21 @@ describe('failures and ordering', () => {
   test('rejects when OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID is unset', async () => {
     delete process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID;
     await expect(handleEvent(studyEvent)).rejects.toThrow('OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID');
+    expect(readResource).not.toHaveBeenCalled();
+  });
+
+  test('skips an ignored event type even when nothing is configured', async () => {
+    delete process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID;
+    delete process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
+    delete process.env.OPENMRS_RESULTS_CHANNEL_URL;
+    await expect(handleEvent({ eventId: 'e', eventType: 'STUDY_UPDATED', data: { id: 'st1' } })).resolves.toEqual({
+      outcome: 'SKIPPED', reason: 'event type',
+    });
+  });
+
+  test('rejects when OPENMRS_RESULTS_CHANNEL_URL is unset', async () => {
+    delete process.env.OPENMRS_RESULTS_CHANNEL_URL;
+    await expect(handleEvent(studyEvent)).rejects.toThrow('OPENMRS_RESULTS_CHANNEL_URL');
     expect(readResource).not.toHaveBeenCalled();
   });
 

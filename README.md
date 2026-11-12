@@ -131,15 +131,25 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
   | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. |
   | `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` | The OpenMRS patient identifier type matching `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`. Required. |
 
+  `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID`, `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM`
+  and `OPENMRS_RESULTS_CHANNEL_URL` are checked for every supported event
+  (an unsupported event type is skipped even when they are missing).
+
   `ADVAPACS_PATIENT_IDENTIFIER_SYSTEM` and
   `ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM` are now also used for results, to
   find the patient and the report's radiologist in OpenMRS.
 - **OpenMRS user privileges.** The channel calls OpenMRS as `OPENMRS_USERNAME`,
   which needs the core privileges `Add Encounters`, `Add Observations`,
-  `Get Orders`, `Get Patients`, `Get Providers`, `Get Concepts` and
-  `Get Encounters`, plus whatever radiologyapp itself requires.
-- **Same server.** The channel's route goes to `openmrs:8080`, so it assumes
-  OpenHIM and OpenMRS run on the same server (same Docker network).
+  `Get Orders`, `Get Patients`, `Get Providers`, `Get Concepts`,
+  `Get Encounters` and `Get Identifier Types`, plus whatever radiologyapp
+  itself requires.
+- **Same server.** The channel's route is built from `OPENMRS_BASE_URL`, so
+  OpenHIM must be able to reach OpenMRS at that address (on the same server,
+  that is the same Docker network).
+- **Dates.** Study and report dates are normalised to ISO strings before they
+  are sent; an event whose `started` / `issued` is missing or unparseable
+  (including a bare year or year-month) is skipped with a 200. radiologyapp
+  clamps a date in the future to now, since OpenMRS rejects future encounters.
 - **One event at a time.** The handler processes events one at a time, in
   arrival order, so two final events for one report can't both create it.
 - **200 vs. 5xx.** Handled and deliberately skipped events get a 200 with
@@ -147,7 +157,10 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
   order, a patient mismatch, a result that already exists, an unsupported event
   type. A failure of AdvaPACS or OpenMRS, or missing configuration, gets a 500
   `{"status":"error"}` (details only in the mediator's log), so AdvaPACS can
-  retry. Logs never include patient identifiers or report text.
+  retry. A result that already exists (`ALREADY_EXISTS`, normal for each
+  update after a final report) is logged at info; `NO_MATCHING_ORDER` and
+  `PATIENT_MISMATCH` are logged as warnings. Logs never include patient
+  identifiers or report text.
 
 ## Upgrading to the single-request poll
 

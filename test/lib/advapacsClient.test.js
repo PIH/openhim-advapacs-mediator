@@ -146,7 +146,7 @@ describe('advapacsClient', () => {
 
     const result = await advapacs.readResource('DiagnosticReport', 'abc');
 
-    expect(mockClient.get).toHaveBeenCalledWith('/DiagnosticReport/abc');
+    expect(mockClient.get).toHaveBeenCalledWith('/DiagnosticReport/abc', { timeout: 30000 });
     expect(result).toEqual(report);
   });
 

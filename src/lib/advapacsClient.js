@@ -101,7 +101,7 @@ async function searchLocations(identifier, organizationId) {
  */
 async function readResource(resourceType, id) {
   try {
-    const { data } = await client.get(`/${resourceType}/${id}`);
+    const { data } = await client.get(`/${resourceType}/${id}`, { timeout: 30000 });
     logger.info('Read resource from AdvaPACS', { resourceType, id });
     return data;
   } catch (err) {
