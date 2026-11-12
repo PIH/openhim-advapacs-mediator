@@ -482,6 +482,89 @@ The flow:
 
 ---
 
+## Design change: acknowledge AdvaPACS once OpenHIM has the event (spec section "Acknowledging AdvaPACS and retrying")
+
+Tasks 12–14 come before Task 11 (deployment).
+
+**Path:** the processing channel is `^/results/advapacs-event$`, not under `/advapacs/`, which the existing "Mediator to AdvaPACS Order Push" channel matches with `^/advapacs/.*$`.
+
+### Task 12: The "AdvaPACS Event Processing" channel
+
+**Files:**
+- Modify: `mediatorConfig.json`:
+  - add a `defaultChannelConfig` entry named `AdvaPACS Event Processing`:
+    - `urlPattern: "^/results/advapacs-event$"`, `methods: ["POST"]`
+    - `authType: "private"`, `allow: ["advapacs-mediator"]`
+    - `timeout: 10000`
+    - `autoRetryEnabled: true`, `autoRetryPeriodMinutes: 5`, `autoRetryMaxAttempts: 24`
+    - `requestBody: true`, `responseBody: true`
+    - one route `OpenMRS-AdvaPACS FHIR Mediator results route`: host `openhim-advapacs-mediator`, port 3500, `primary: true`, `forwardAuthHeader: false`
+  - add an `endpoints` entry for `/results/advapacs-event`
+- Modify: `scripts/setupOpenhim.js`:
+  - add the channel to `CHANNEL_NAMES`
+  - set its `allow` to the results client id (the same client `withResultsClient` uses)
+  - provision it only when `OPENHIM_RESULTS_CLIENT_PASSWORD` is set; otherwise log one line naming the variable, as for the results client
+- Test: `test/scripts/setupOpenhim.test.js`
+
+**Interfaces:**
+- Produces: OpenHIM routes `POST ${OPENHIM_ROUTER_URL}/results/advapacs-event`, authenticated as the results client, to the mediator's `POST /results/advapacs-event`. OpenHIM retries on a route timeout, on a connection failure, or on an OpenHIM mediator-error response.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `provisions the event processing channel with auto-retry and a 10s timeout`
+  - `allows only the results client on the event processing channel`
+  - `skips the event processing channel when OPENHIM_RESULTS_CLIENT_PASSWORD is unset`
+- [ ] **Step 2: Run them and see them fail.** Run `npx jest test/scripts/setupOpenhim.test.js`; expect FAIL.
+- [ ] **Step 3: Implement it.**
+- [ ] **Step 4: Run the tests and see them pass.** Run `npx jest`; expect PASS.
+- [ ] **Step 5: Commit** with the message `LSO-209: OpenHIM channel for processing AdvaPACS events with retries`.
+
+### Task 13: The processing endpoint
+
+**Files:**
+- Create: `src/lib/openhimResponse.js`. Move `sendRetryableFailure(res, err)` there from `src/routes/serviceRequest.js` unchanged (503, `application/json+openhim`, `x-mediator-urn`, `error`), and use it from serviceRequest.js. Its behaviour must not change; the existing serviceRequest tests must still pass.
+- Create: `src/routes/advapacsEvent.js`:
+  - `POST /results/advapacs-event`, behind `requireSharedSecret({ headerName: 'x-mediator-secret', envVar: 'MEDIATOR_INBOUND_SECRET', label: 'AdvaPACS event' })`
+  - calls `handleEvent(req.body)`
+  - on success, answers `200 {status:'ok', outcome, reason?}`
+  - on rejection, logs the message only and answers with `sendRetryableFailure`
+- Modify: `src/lib/resultHandler.js`. A `null` (404) for the **event's own resource** (the ImagingStudy for `STUDY_CREATED`, the DiagnosticReport for `REPORT_*`) now rejects with `Error('<Type> <id> not found')` instead of skipping 'not found', so OpenHIM retries it. 404s on linked resources keep today's behaviour.
+- Modify: `src/index.js`, to mount the route.
+- Test: `test/routes/advapacsEvent.test.js` (mock resultHandler), and `test/lib/resultHandler.test.js` (update the not-found test)
+
+- [ ] **Step 1: Write the failing tests:**
+  - `returns 200 with the outcome for a handled event`
+  - `answers an OpenHIM mediator-error (503, application/json+openhim, error.message) when the handler rejects`
+  - `rejects a request without the shared secret (401) without calling the handler`
+  - in resultHandler: `rejects when the event's own resource is not found`, and `still imports a report whose linked study is not found`
+- [ ] **Step 2: Run them and see them fail.** Run `npx jest test/routes/advapacsEvent.test.js test/lib/resultHandler.test.js`; expect FAIL.
+- [ ] **Step 3: Implement it.**
+- [ ] **Step 4: Run the tests and see them pass.** Run `npx jest`; expect PASS, including the unchanged serviceRequest tests.
+- [ ] **Step 5: Commit** with the message `LSO-209: Endpoint OpenHIM calls to process AdvaPACS events, with retryable failures`.
+
+### Task 14: The webhook hands events to OpenHIM
+
+**Files:**
+- Create: `src/lib/eventQueueClient.js`:
+  - `submitEvent(event): Promise<{accepted: boolean, status?: number, code?: string}>`
+  - POSTs the event to `${OPENHIM_ROUTER_URL}/results/advapacs-event` with Basic auth (`OPENHIM_RESULTS_CLIENT_ID || 'advapacs-mediator'` / `OPENHIM_RESULTS_CLIENT_PASSWORD`), header `X-Mediator-Secret: MEDIATOR_INBOUND_SECRET`, and `timeout: 30000` (longer than the channel's 10s route timeout)
+  - **Accepted** = OpenHIM answered with any status except 401, 403 or 404. That includes 2xx, the 503 mediator-error, and OpenHIM's timeout or 5xx answers, because OpenHIM has stored the transaction and queued any retry.
+  - **Not accepted** = 401, 403 or 404 (OpenHIM rejected our login, or there's no such channel), or no response at all (network error or timeout).
+  - Never let an axios object out, as in radiologyappClient.
+- Modify: `src/routes/advapacsWebhook.js`. After the credential and shape checks and the "Received" log, call `submitEvent(event)`:
+  - accepted → `200 {status:'ok'}`
+  - not accepted → log a warn (status or code only) and answer `503 {status:'error'}`
+  - the `TEST_EVENT` path stays unchanged (acknowledged directly)
+- Modify: `README.md` "Results to OpenMRS". Describe the hand-off to OpenHIM, the retry schedule (every 5 minutes, up to 24 times), re-running Failed transactions from the console, and that `OPENHIM_RESULTS_CLIENT_PASSWORD` and `MEDIATOR_INBOUND_SECRET` are now needed for results.
+- Test: `test/lib/eventQueueClient.test.js` and `test/routes/advapacsWebhook.test.js`
+
+- [ ] **Step 1: Write the failing tests:**
+  - client: `posts the event with the results client's auth and the shared secret`; `treats 200, 503 and 504 as accepted`; `treats 401, 403, 404 and a network error as not accepted`; `the result carries no axios objects`
+  - route: `acknowledges 200 once OpenHIM accepted the event`; `answers 503 when OpenHIM did not accept it`; `still acknowledges a TEST_EVENT without submitting it`
+- [ ] **Step 2: Run them and see them fail.** Run `npx jest test/lib/eventQueueClient.test.js test/routes/advapacsWebhook.test.js`; expect FAIL.
+- [ ] **Step 3: Implement it.**
+- [ ] **Step 4: Run the tests and see them pass.** Run `npx jest`; expect PASS.
+- [ ] **Step 5: Commit** with the message `LSO-209: Acknowledge AdvaPACS once OpenHIM has the event`.
+
 ## Deployment and verification on kol-ci
 
 ### Task 11: Deploy and run the spec's verification
