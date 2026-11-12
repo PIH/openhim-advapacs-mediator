@@ -4,6 +4,7 @@ const advapacs = require('./advapacsClient');
 const { resolveSite } = require('./siteLocation');
 const { readOrder } = require('./orderBundle');
 const modalityMap = require('./modalityMap');
+const { accessionNumberSystem } = require('./identifiers');
 
 // TODOs:UHM-9437, UHM-9439, UHM-9440
 
@@ -11,7 +12,6 @@ const ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PATIENT_IDENTIFI
 const ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM;
 
 const PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
-const ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
 
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/v2-0203';
 const PATIENT_INTERNAL_IDENTIFIER_TYPE_CODE = 'PI';
@@ -151,7 +151,7 @@ function withAccessionNumber(identifiers = []) {
   const placer = stamped.find((identifier) => identifier.system === PLACER_ORDER_NUMBER_SYSTEM);
   return placer
     ? [...stamped, {
-      system: ACCESSION_NUMBER_SYSTEM,
+      system: accessionNumberSystem(),
       value: placer.value,
       type: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v2-0203', code: 'ACSN' }] }
     }]
