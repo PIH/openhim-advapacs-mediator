@@ -23,8 +23,8 @@ Two repos change:
 - A report `amended` or `corrected` → a new Radiology Report encounter of type *correction*.
 - Repeated or out-of-order webhooks never create duplicates.
 - Every write to OpenMRS can be traced (mediator log, OpenHIM transaction, OpenMRS log).
-- The mediator reaches OpenMRS only through a new OpenHIM channel, including the existing order
-  poller (see "The mediator → OpenMRS channel").
+- The mediator's calls to the radiologyapp endpoint go through a new OpenHIM channel (see "The
+  mediator → OpenMRS channel").
 
 ## Non-goals (not in this first version)
 
@@ -56,15 +56,17 @@ Tracked so they can be picked up later:
     no update. Future task: review whether that model fits AdvaPACS (repeat acquisitions, a study
     split or merged in the PACS, more images added later, `STUDY_UPDATED`) and whether radiologyapp
     should change.
-11. **Duplicate accession numbers.** Accession numbers are plain OpenMRS order numbers, which can
-    repeat across OpenMRS servers sharing the AdvaPACS tenant. Future task: make sure duplicates are
-    handled properly, e.g. by checking the accession identifier's `system` (its assigning
-    authority) as well as its value. To confirm on kol-ci: does AdvaPACS return the `system` (and/or
-    an `assigner`) on the ImagingStudy / ServiceRequest accession identifier? The IMLADRIS lab shows
-    AdvaPACS emitting a `system` URI per configured NamingSystem, so it likely does, but this
-    mediator sends the same `system` from every Lesotho server
-    (`http://www.pih.org/identifiers/lesotho/radiology-accession-number`), so today it wouldn't tell
-    sites apart. The patient check below is this version's guard.
+11. **Routing the order poller through OpenHIM.** The poller keeps calling OpenMRS directly in this
+    version. Potential improvement, to ticket: send its searches through an OpenHIM channel so they
+    show as transactions. Why not now: it polls every few seconds, so it would add a transaction
+    per poll, most of them empty; non-empty responses hold full order Bundles with Patient
+    resources (so body storage would need turning off for them); a failed poll needs no OpenHIM
+    retry (the next poll covers it); and it changes an order path that already works on kol-ci.
+    The other direct calls (`getConceptsMappedToSource`, `getOrderBundle`) stay direct too.
+
+**Not a concern: duplicate accession numbers.** Lesotho will run one OpenMRS server shared by all
+sites, and accession numbers (order numbers) are unique within it, so production accessions can't
+collide. (Test servers sharing the AdvaPACS tenant are covered by the patient check below.)
 
 ## Anti-goals (would make this a failure even if it "works")
 
@@ -247,36 +249,22 @@ Required behaviour:
 
 ### The mediator → OpenMRS channel
 
-A new OpenHIM channel for the mediator's calls to OpenMRS, so every call is a logged OpenHIM
-transaction, as the AdvaPACS legs already are. Provisioned by the mediator like its other channels
-(`defaultChannelConfig` in `mediatorConfig.json`), with a mediator-side setting for its URL like
-`ADVAPACS_CHANNEL_URL`. It carries:
+A new OpenHIM channel for the mediator's calls to the radiologyapp endpoint, so each write is a logged
+OpenHIM transaction, as the AdvaPACS legs already are. Provisioned by the mediator like its other
+channels (`defaultChannelConfig` in `mediatorConfig.json`), with a mediator-side setting for its URL
+like `ADVAPACS_CHANNEL_URL`. Its `urlPattern` covers only the radiologyapp endpoint, not OpenMRS in
+general. The order poller and other existing OpenMRS calls stay direct (non-goal 11).
 
-- the radiologyapp endpoint calls (this work), and
-- the **order poller's** ServiceRequest searches (`openmrsClient.searchServiceRequests`), moved from
-  calling OpenMRS directly.
+**Assumption:** OpenHIM and OpenMRS run on the same server (as on kol-ci), so the route goes to
+OpenMRS over the local/docker network and the OpenMRS credentials never cross another network. If
+they are ever split, the route needs TLS and this section needs revisiting.
 
 Points the builder must handle:
 
-- **Auth.** OpenHIM's private-channel client auth and OpenMRS's both use `Authorization: Basic`, so
-  the one header can't do both. Either a public channel that forwards the mediator's OpenMRS
-  credentials (as the AdvaPACS outbound channel does), restricted so it's reachable only from inside
-  the deployment, or a private channel for a mediator client with the OpenMRS credentials set on the
-  route. Check what Caddy exposes on `/openhim-router/` before choosing a public channel.
-- **Transaction volume and bodies.** The poller searches every few seconds, so this adds one
-  transaction per poll (most of them empty), and non-empty responses hold full order Bundles with
-  Patient resources. Consider not storing bodies for the poll requests (OpenHIM's
-  `requestBody`/`responseBody` channel options), or a separate poll channel with that set.
-- **Retries.** No `autoRetry` for the poll: a failed poll leaves the cursor where it was and the next
-  one covers it. Retries for the endpoint writes are safe (they're idempotent), but OpenHIM retrying
-  a write while AdvaPACS also gets a 5xx and retries means double handling; one or the other.
-- **Paging.** FHIR2's next links name OpenMRS's host; `nextPageQuery` already keeps only the query,
-  so paging should work through the channel unchanged, but test it with more than one page.
-- **Scope.** The other `openmrsClient.js` calls (`getConceptsMappedToSource` for the modality map,
-  `getOrderBundle`) can move to the same channel too; whether they do in this work is the builder's
-  call (my lean: yes, so there's one way to reach OpenMRS).
-- The poller already works on kol-ci; moving it is a change to a working path, so it needs its own
-  regression check (see Verification).
+- **Auth** (public or private channel): *to decide*. OpenHIM's client auth and OpenMRS's both use
+  `Authorization: Basic`, so one header can't do both.
+- **Retries.** Endpoint writes are idempotent, so retrying is safe, but use OpenHIM's `autoRetry` or
+  AdvaPACS's retry (via a 5xx), not both, or an event is handled twice.
 
 ### The mediator
 
@@ -303,7 +291,7 @@ Points the builder must handle:
 - The endpoint's URL, request and response format, and which REST framework pieces to use
   (e.g. a controller under `/ws/rest/v1/radiologyapp/...`, which needs a webservices.rest dependency
   the module doesn't have today).
-- The channel's auth option and body-storage settings (see "The mediator → OpenMRS channel").
+- Whether the new channel stores request/response bodies (report text passes through it).
 - How *correction* repeats are detected (report date is the suggestion; the IMLADRIS lab saw
   AdvaPACS update `issued` on each sign and amend, so a new amendment gets a new date; confirm on kol-ci).
 - Whether to handle events synchronously or acknowledge first and process in the background (watch
@@ -326,8 +314,4 @@ On kol-ci, with your own AdvaPACS account:
 7. With a radiologist whose Practitioner has the provider-UUID identifier: the report shows that
    provider; without it, the unknown provider. Same for a technician on the ImagingStudy, if
    AdvaPACS fills `series.performer`.
-8. Order poller through the new channel: placing an order still reaches AdvaPACS, the polls show
-   in OpenHIM's transaction log as expected (bodies stored or not, per the chosen settings), and a
-   poll across more than one page of results works.
-9. Check the accession identifier on a real ImagingStudy: its `system` and any `assigner` (feeds
-   non-goal 11).
+8. Each radiologyapp call shows as a transaction on the new channel in OpenHIM.
