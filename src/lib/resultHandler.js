@@ -45,8 +45,7 @@ async function patientIdentifier(resource, ctx) {
   const id = mapper.referenceId(ref, 'Patient');
   if (!id) throw new Skip('no patient identifier');
   const patient = await read('Patient', id, ctx);
-  const system = process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
-  const value = system ? identifierValue(patient, system) : undefined;
+  const value = identifierValue(patient, process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM);
   if (!value) {
     logger.warn('Patient has no identifier with our system', { resourceId: ctx.resourceId });
     throw new Skip('no patient identifier');
@@ -150,6 +149,9 @@ async function handleReport(ctx) {
 async function processEvent(event) {
   if (!process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID) {
     throw new Error('OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID is not configured');
+  }
+  if (!process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM) {
+    throw new Error('ADVAPACS_PATIENT_IDENTIFIER_SYSTEM is not configured');
   }
   const eventType = event && event.eventType;
   const eventId = event && event.eventId;

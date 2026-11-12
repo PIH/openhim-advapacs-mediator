@@ -248,6 +248,12 @@ describe('failures and ordering', () => {
     expect(readResource).not.toHaveBeenCalled();
   });
 
+  test('rejects when ADVAPACS_PATIENT_IDENTIFIER_SYSTEM is unset', async () => {
+    delete process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
+    await expect(handleEvent(studyEvent)).rejects.toThrow('ADVAPACS_PATIENT_IDENTIFIER_SYSTEM');
+    expect(readResource).not.toHaveBeenCalled();
+  });
+
   test('handles concurrent final events for one report as one create', async () => {
     resources({
       'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
