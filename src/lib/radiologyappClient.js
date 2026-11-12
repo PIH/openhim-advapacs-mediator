@@ -34,12 +34,12 @@ async function post(path, body) {
 
 /** POST a study import. Resolves {outcome, encounterUuid}; rejects on any non-2xx. */
 function importStudy(body) {
-  return post('/study', body);
+  return post('/studyimport', body);
 }
 
 /** POST a report import. Same contract as importStudy. */
 function importReport(body) {
-  return post('/report', body);
+  return post('/reportimport', body);
 }
 
 module.exports = { importStudy, importReport };

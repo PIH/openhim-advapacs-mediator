@@ -114,8 +114,8 @@ AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
         --> the mediator's POST /results/advapacs-event (routes/advapacsEvent.js) --> lib/resultHandler.js
         --reads the study / report (and its Patient) from AdvaPACS--> advapacsClient.js
         --maps it (lib/resultMapper.js) and POSTs it, as JSON--> radiologyappClient.js
-          --> OpenHIM channel "Mediator to OpenMRS Radiology Results"  ^/openmrs/ws/rest/v1/radiologyapp/(study|report)$
-            --> OpenMRS POST /ws/rest/v1/radiologyapp/study | report
+          --> OpenHIM channel "Mediator to OpenMRS Radiology Results"  ^/openmrs/ws/rest/v1/radiologyapp/(studyimport|reportimport)$
+            --> OpenMRS POST /ws/rest/v1/radiologyapp/studyimport | reportimport
 ```
 
 **Hand-off to OpenHIM.** The webhook does not process the event itself. It
@@ -169,7 +169,7 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
 *correction*).
 
 - **Required OpenMRS version.** A radiologyapp with the
-  `/ws/rest/v1/radiologyapp/study` and `/report` endpoints: the
+  `/ws/rest/v1/radiologyapp/studyimport` and `/reportimport` endpoints: the
   2.0.0-SNAPSHOT build from branch LSO-209 of `openmrs-module-radiologyapp`.
   Earlier releases have no REST API, so every import would fail.
 - **Settings** (see `.env.example`):

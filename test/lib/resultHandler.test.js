@@ -403,7 +403,7 @@ describe('failures and ordering', () => {
       'DiagnosticReport/r1': report({ identifier: [{ system: ACC_SYS, value: 'ACC1' }] }),
       'Patient/p1': patient,
     });
-    const err = new Error('radiologyapp /report failed (ECONNREFUSED)');
+    const err = new Error('radiologyapp /reportimport failed (ECONNREFUSED)');
     err.code = 'ECONNREFUSED';
     importReport.mockRejectedValueOnce(err);
     const rejection = await handleEvent(reportEvent()).catch((e) => e);

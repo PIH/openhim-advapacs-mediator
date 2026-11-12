@@ -94,7 +94,7 @@
     },
     {
       "name": "Mediator to OpenMRS Radiology Results",
-      "urlPattern": "^/openmrs/ws/rest/v1/radiologyapp/(study|report)$",
+      "urlPattern": "^/openmrs/ws/rest/v1/radiologyapp/(studyimport|reportimport)$",
       "routes": [
         {
           "name": "OpenMRS radiologyapp",

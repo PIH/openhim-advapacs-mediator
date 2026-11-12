@@ -81,7 +81,7 @@ describe('setupOpenhim', () => {
 
     const channel = posted('/channels').find((c) => c.name === RESULTS_CHANNEL);
     expect(channel).toMatchObject({
-      urlPattern: '^/openmrs/ws/rest/v1/radiologyapp/(study|report)$',
+      urlPattern: '^/openmrs/ws/rest/v1/radiologyapp/(studyimport|reportimport)$',
       authType: 'private',
       methods: ['POST']
     });

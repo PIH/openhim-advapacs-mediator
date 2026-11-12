@@ -21,7 +21,7 @@ describe('radiologyappClient', () => {
     radiologyapp = require('../../src/lib/radiologyappClient');
   });
 
-  test("posts a study to /study with the results client's Basic auth", async () => {
+  test("posts a study to /studyimport with the results client's Basic auth", async () => {
     const result = { outcome: 'CREATED', encounterUuid: 'enc-1' };
     mockClient.post.mockResolvedValue({ status: 200, data: result });
     const body = { accessionNumber: 'A1' };
@@ -33,16 +33,16 @@ describe('radiologyappClient', () => {
       auth: { username: 'results-client', password: 'results-pw' },
       timeout: 30000
     });
-    expect(mockClient.post).toHaveBeenCalledWith('/study', body);
+    expect(mockClient.post).toHaveBeenCalledWith('/studyimport', body);
   });
 
-  test('posts a report to /report', async () => {
+  test('posts a report to /reportimport', async () => {
     const result = { outcome: 'ALREADY_EXISTS', encounterUuid: 'enc-2' };
     mockClient.post.mockResolvedValue({ status: 200, data: result });
     const body = { accessionNumber: 'A1', reportText: 'x' };
 
     await expect(radiologyapp.importReport(body)).resolves.toEqual(result);
-    expect(mockClient.post).toHaveBeenCalledWith('/report', body);
+    expect(mockClient.post).toHaveBeenCalledWith('/reportimport', body);
   });
 
   test("rejects on 400 with the server's error message in the Error", async () => {
