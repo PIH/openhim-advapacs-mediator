@@ -81,7 +81,7 @@ function noAccession(ctx) {
 
 async function handleStudy(ctx) {
   const study = await read('ImagingStudy', ctx.resourceId, ctx);
-  if (!study) throw new Skip('not found');
+  if (!study) throw new Error(`ImagingStudy ${ctx.resourceId} not found`);
   ctx.status = study.status;
   const skipReason = mapper.studySkipReason(study);
   if (skipReason) throw new Skip(skipReason);
@@ -110,7 +110,7 @@ async function handleStudy(ctx) {
 
 async function handleReport(ctx) {
   const report = await read('DiagnosticReport', ctx.resourceId, ctx);
-  if (!report) throw new Skip('not found');
+  if (!report) throw new Error(`DiagnosticReport ${ctx.resourceId} not found`);
   ctx.status = report.status;
   const reportType = mapper.reportTypeFor(report.status);
   if (!reportType) throw new Skip(`status ${report.status}`);

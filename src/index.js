@@ -10,6 +10,7 @@ const { main: setupOpenhim } = require('../scripts/setupOpenhim');
 
 const serviceRequestRoute = require('./routes/serviceRequest');
 const advapacsWebhookRoute = require('./routes/advapacsWebhook');
+const advapacsEventRoute = require('./routes/advapacsEvent');
 const healthRoute = require('./routes/health');
 
 function startServer() {
@@ -24,6 +25,10 @@ function startServer() {
 
   // AdvaPACS's webhook, behind OpenHIM's ^/webhooks/advapacs$ channel; creates radiologyapp studies and reports in OpenMRS.
   app.use('/', advapacsWebhookRoute);
+
+  // Where OpenHIM's ^/results/advapacs-event$ channel routes each webhook event for processing; failures are answered
+  // as OpenHIM mediator errors so the channel's auto-retry re-runs them.
+  app.use('/', advapacsEventRoute);
 
   if (process.env.ORDER_INGESTION_MODE === 'poll') {
     orderPoller.start(Number(process.env.ORDER_POLL_INTERVAL_MS) || 60000);

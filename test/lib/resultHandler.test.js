@@ -354,9 +354,21 @@ describe('reports', () => {
 });
 
 describe('failures and ordering', () => {
-  test('skips with 200 when AdvaPACS has no such resource', async () => {
+  test("rejects when the event's own resource is not found, so OpenHIM retries it", async () => {
     readResource.mockResolvedValue(null);
-    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'SKIPPED', reason: 'not found' });
+    await expect(handleEvent(reportEvent())).rejects.toThrow('DiagnosticReport r1 not found');
+    await expect(handleEvent(studyEvent)).rejects.toThrow('ImagingStudy st1 not found');
+  });
+
+  test('still imports a report whose linked study is not found', async () => {
+    resources({
+      'DiagnosticReport/r1': report({
+        identifier: [{ system: ACC_SYS, value: 'OWN' }],
+        study: [{ reference: 'ImagingStudy/st1' }],
+      }),
+      'Patient/p1': patient,
+    });
+    await expect(handleEvent(reportEvent())).resolves.toEqual({ outcome: 'CREATED' });
   });
 
   test('rejects when OpenMRS is unreachable, with a plain safe error, and keeps going', async () => {
