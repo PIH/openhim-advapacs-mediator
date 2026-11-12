@@ -42,14 +42,35 @@ describe('eventQueueClient', () => {
     expect(mockClient.post.mock.calls[0][2].auth.username).toBe('advapacs-mediator');
   });
 
-  test.each([200, 503, 504, 500])('treats %i as accepted', async (status) => {
+  test.each([200, 202, 500, 503, 504])('treats %i as accepted', async (status) => {
     mockClient.post.mockResolvedValue({ status });
     await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: true, status });
   });
 
-  test.each([401, 403, 404])('treats %i as not accepted', async (status) => {
+  test.each([400, 401, 403, 404, 405, 413, 429])('treats %i as not accepted', async (status) => {
     mockClient.post.mockResolvedValue({ status });
     await expect(submitEvent(EVENT)).resolves.toEqual({ accepted: false, status });
+  });
+
+  test('creates the client with a validateStatus that lets every status through', () => {
+    const options = require('axios').create.mock.calls[0][0];
+    expect(options.validateStatus(404)).toBe(true);
+    expect(options.validateStatus(503)).toBe(true);
+  });
+
+  test('warns, with the status only, when an accepted answer is not 2xx', async () => {
+    const logger = require('../../src/lib/logger');
+    mockClient.post.mockResolvedValue({ status: 500, data: { secret: 'body' } });
+    await submitEvent(EVENT);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(logger.warn.mock.calls[0])).toContain('500');
+    expect(JSON.stringify(logger.warn.mock.calls[0])).not.toContain('body');
+  });
+
+  test('does not warn on a 2xx answer', async () => {
+    mockClient.post.mockResolvedValue({ status: 200 });
+    await submitEvent(EVENT);
+    expect(require('../../src/lib/logger').warn).not.toHaveBeenCalled();
   });
 
   test('treats a network error as not accepted', async () => {

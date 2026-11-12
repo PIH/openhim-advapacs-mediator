@@ -114,10 +114,13 @@ AdvaPACS webhook event (STUDY_CREATED, REPORT_CREATED / REPORT_UPDATED)
 
 **Hand-off to OpenHIM.** The webhook does not process the event itself. It
 passes it to OpenHIM's "AdvaPACS Event Processing" channel and answers
-AdvaPACS `200` once OpenHIM has answered, whatever the answer: OpenHIM has
-then stored the transaction and queued any retry. If OpenHIM rejects the
-mediator's login (401/403), has no such channel (404) or can't be reached, the
-webhook answers `503` and AdvaPACS may resend the event.
+AdvaPACS `200` once OpenHIM has taken it: OpenHIM answered 2xx, or 5xx
+(a route timeout, or the mediator reporting an error), in which case the
+transaction is stored and OpenHIM queues the retry. Any 4xx answer (login
+rejected, no such channel, bad request) and no answer at all get `503`, so
+AdvaPACS may resend the event. A 401 can also come from the mediator's
+shared-secret check. The acknowledgement waits for OpenHIM's answer, so it can
+take up to about 10 seconds (the channel's route timeout) plus processing.
 
 **Retries.** If processing fails (OpenMRS or AdvaPACS down, say), OpenHIM
 retries the event every 5 minutes, up to 24 times (about 2 hours). A
