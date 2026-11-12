@@ -163,7 +163,7 @@
 **Files:**
 - Modify: `pom.xml`. Add the property `<webservicesRestVersion>2.42.0</webservicesRestVersion>` (the version coreapps 3.0.0, already a required module, builds against), and `webservices.rest-omod` with scope `provided` in `dependencyManagement`, as in `modules/metadatamapping/pom.xml`.
 - Modify: `omod/pom.xml`, adding the `webservices.rest-omod` provided dependency.
-- Modify: `omod/src/main/resources/config.xml`. Add `<require_module version="${webservicesRestVersion}">org.openmrs.module.webservices.rest</require_module>`, and a privilege `Task: org.openmrs.module.radiologyapp.importResults` ("Create radiology studies and reports from an external PACS").
+- Modify: `omod/src/main/resources/config.xml`. Add `<require_module version="${webservicesRestVersion}">org.openmrs.module.webservices.rest</require_module>`. No new privilege: the endpoint checks core's existing `Add Encounters` up front, and the OpenMRS API enforces the rest (`Add Observations`, `Get Orders`, `Get Patients`, `Get Providers`, `Get Concepts`, `Get Encounters`).
 - Create: `omod/src/main/java/org/openmrs/module/radiologyapp/web/controller/RadiologyImportRestController.java`
 - Test: `omod/src/test/java/org/openmrs/module/radiologyapp/web/controller/RadiologyImportRestControllerTest.java` (Mockito unit test; mock `RadiologyService`)
 
@@ -185,7 +185,7 @@
     - the response map has `outcome = "CREATED"`
   - `postReport_shouldReturn400ForIllegalArgument`: the service throws → status 400, and the body has `error`.
   - `postStudy_shouldReturn400ForBadDate`: `"yesterday"` → 400.
-  - `postStudy_shouldRequireImportResultsPrivilege`: the method calls `Context.requirePrivilege("Task: org.openmrs.module.radiologyapp.importResults")` (verify with a `Context` that lacks it, or check for `@Authorized` on the handler; use whichever the module's test setup supports).
+  - `postStudy_shouldRequireAddEncountersPrivilege`: a user without `Add Encounters` gets an `APIAuthenticationException` (webservices.rest turns it into 401/403) and the service isn't called. Use whichever of a `Context` without the privilege, or mocking `Context`, the module's test setup supports.
 
 - [ ] **Step 2: Run them and see them fail.**
   Run: `mvn -q test -Dtest=RadiologyImportRestControllerTest`
@@ -195,6 +195,7 @@
   - `@RequestMapping(value = "/rest/" + RestConstants.VERSION_1 + "/radiologyapp/study", method = POST) @ResponseBody Object postStudy(@RequestBody Map<String, Object> body)`, and `postReport` the same way.
   - Parse dates with `ConversionUtil.convert(value, Date.class)`; a null result is a 400.
   - An `@ExceptionHandler(IllegalArgumentException.class)` returns 400 with `{"error": message}`.
+  - Each handler starts with `Context.requirePrivilege(PrivilegeConstants.ADD_ENCOUNTERS)`.
   - Get the service with `Context.getService(RadiologyService.class)`.
 
 - [ ] **Step 4: Run the tests and see them pass, then build.**
@@ -452,7 +453,7 @@ The flow:
   - the flow
   - the new settings (`ADVAPACS_ACCESSION_NUMBER_SYSTEM`, `OPENMRS_RESULTS_CHANNEL_URL`, `OPENHIM_RESULTS_CLIENT_ID`, `OPENHIM_RESULTS_CLIENT_PASSWORD`, `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID`)
   - the radiologyapp version required
-  - the privilege `Task: org.openmrs.module.radiologyapp.importResults` the OpenMRS user needs
+  - the core privileges the OpenMRS user needs (`Add Encounters`, `Add Observations`, `Get Orders`, `Get Patients`, `Get Providers`, `Get Concepts`, `Get Encounters`)
   - the assumption that OpenHIM and OpenMRS run on the same server
 
   Keep credential-storage details out of the README (they're tracked in LSO-302).
@@ -489,7 +490,7 @@ There's no code to write here. This is a checklist; stop and report to the user 
   - that a kol-ci radiology order's order type matches GP `emr.radiologyTestOrderType`
 
   Report both to the user.
-- [ ] **Step 2: Grant the privilege.** Check that the mediator's OpenMRS user has `Task: org.openmrs.module.radiologyapp.importResults`, plus encounter creation; it needs a role that has them. Ask the user how PIH config should grant this.
+- [ ] **Step 2: Check privileges.** Check that the mediator's OpenMRS user has the core privileges listed in the README (it may already have most, since it reads orders). Ask the user how PIH config should grant any that are missing.
 - [ ] **Step 3: Puppet PR** (PIH/mirebalais-puppet). Add the new mediator env vars for kol-ci next to `kol_ci_advapacs_webhook_secret` in `hieradata/SOMPRINFAPPCLSTR-01.yaml`. `OPENHIM_RESULTS_CLIENT_PASSWORD` is a new eyaml secret; `OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID` comes from Step 1. Branch from master.
 - [ ] **Step 4: Release radiologyapp.** Merge the radiologyapp PR and get the new omod into the Lesotho distro used by kol-ci; ask the user for the route (SNAPSHOT or release). Then merge the mediator PR, which auto-deploys to kol-ci.
 - [ ] **Step 5: Run the spec's Verification steps 1–9** with the user, who drives AdvaPACS. Also confirm:
