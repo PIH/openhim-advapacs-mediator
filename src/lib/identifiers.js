@@ -7,7 +7,8 @@ function accessionNumberSystem() {
 
 // Match by system only, never by value or type alone.
 function identifierValue(resource, system) {
-  const match = ((resource && resource.identifier) || []).find((id) => id.system === system);
+  const ids = resource && Array.isArray(resource.identifier) ? resource.identifier : [];
+  const match = ids.find((id) => id && id.system === system);
   return match ? match.value : undefined;
 }
 

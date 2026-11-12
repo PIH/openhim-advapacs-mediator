@@ -51,4 +51,12 @@ describe('identifiers', () => {
     expect(identifiers.accessionNumber({ resourceType: 'ImagingStudy' })).toBeUndefined();
     expect(identifiers.identifierValue({}, 'urn:x')).toBeUndefined();
   });
+
+  it('does not throw on a malformed identifier field', () => {
+    expect(identifiers.accessionNumber({ identifier: 'nope' })).toBeUndefined();
+    expect(identifiers.accessionNumber({ identifier: { system: DEFAULT_SYSTEM } })).toBeUndefined();
+    expect(
+      identifiers.accessionNumber({ identifier: [null, { system: DEFAULT_SYSTEM, value: 'ACC-2' }] })
+    ).toBe('ACC-2');
+  });
 });
