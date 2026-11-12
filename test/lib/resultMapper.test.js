@@ -121,6 +121,11 @@ describe('resultMapper', () => {
   });
 
   it('ignores identifiers without a system', () => {
-    expect(accessionNumber({ identifier: [{ value: 'ACC-9' }] })).toBeUndefined();
+    process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
+    try {
+      expect(accessionNumber({ identifier: [{ value: 'ACC-9' }] })).toBeUndefined();
+    } finally {
+      delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    }
   });
 });

@@ -180,8 +180,8 @@ Radiology Study encounter (for a study) or a Radiology Report encounter (for a
 
   | Variable | Purpose |
   |---|---|
-  | `ADVAPACS_ACCESSION_NUMBER_SYSTEM` | Identifier system under which AdvaPACS carries our accession number; on results, the accession is read only from the identifier with this system, then its value is matched to the OpenMRS order. Has a default. |
-| `ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM` | Identifier system stamped on the order's placer (order number) identifier on outbound ServiceRequests. Has a default. |
+  | `ADVAPACS_ACCESSION_NUMBER_SYSTEM` | Identifier system under which AdvaPACS carries our accession number; on results, the accession is read only from the identifier with this system, then its value is matched to the OpenMRS order. Required (no default). |
+| `ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM` | Identifier system stamped on the order's placer (order number) identifier on outbound ServiceRequests. Required (no default). |
   | `OPENMRS_RESULTS_CHANNEL_URL` | Address of the "Mediator to OpenMRS Radiology Results" channel as the mediator sees it (distro-tools: `http://openhim-core:5001/openmrs`). |
   | `OPENHIM_RESULTS_CLIENT_ID` | OpenHIM Client the mediator calls that channel as (default `advapacs-mediator`). |
   | `OPENHIM_RESULTS_CLIENT_PASSWORD` | That Client's password; `scripts/setupOpenhim.js` creates the Client from it. Unset, the channel accepts no one. Also carries the hand-off to OpenHIM's processing channel: unset, every event is answered 503. |
@@ -434,6 +434,8 @@ export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
 export ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/provider-uuid"
+export ADVAPACS_ACCESSION_NUMBER_SYSTEM="http://www.pih.org/identifiers/lesotho/radiology-accession-number"
+export ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM="http://www.pih.org/identifiers/lesotho/radiology-order-number"
 export SERVICES=openmrs-db,openmrs,openhim,openhim-advapacs-mediator 
 
 openmrs-docker create <name>
@@ -471,6 +473,8 @@ export ADVAPACS_CLIENT_ID=<...>
 export ADVAPACS_CLIENT_SECRET=<...>
 export ADVAPACS_PATIENT_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/emr-id"
 export ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM="http://www.pih.org/identifiers/lesotho/provider-uuid"
+export ADVAPACS_ACCESSION_NUMBER_SYSTEM="http://www.pih.org/identifiers/lesotho/radiology-accession-number"
+export ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM="http://www.pih.org/identifiers/lesotho/radiology-order-number"
 export OPENMRS_BASE_URL=http://host.docker.internal:8080/openmrs
 export SERVICES=openhim,openhim-advapacs-mediator 
 openmrs-docker create <name>

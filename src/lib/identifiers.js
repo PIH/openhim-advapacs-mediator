@@ -1,14 +1,19 @@
-const DEFAULT_ACCESSION_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-accession-number';
-const DEFAULT_PLACER_ORDER_NUMBER_SYSTEM = 'http://www.pih.org/identifiers/lesotho/radiology-order-number';
+// Both systems are site configuration, with no default: a wrong one would quietly stamp orders, or
+// match results, under another site's system. Read at call time; unset throws a configuration error.
+function requiredSetting(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not configured`);
+  return value;
+}
 
-// Read at call time so the setting can change without reloading the module.
+// The identifier system under which AdvaPACS carries our accession number (orders and results).
 function accessionNumberSystem() {
-  return process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM || DEFAULT_ACCESSION_NUMBER_SYSTEM;
+  return requiredSetting('ADVAPACS_ACCESSION_NUMBER_SYSTEM');
 }
 
 // The system stamped on the order's placer (order number) identifier on outbound ServiceRequests.
 function placerOrderNumberSystem() {
-  return process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM || DEFAULT_PLACER_ORDER_NUMBER_SYSTEM;
+  return requiredSetting('ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM');
 }
 
 // The value of the resource's identifier issued by `system` (its assigning authority), or undefined.

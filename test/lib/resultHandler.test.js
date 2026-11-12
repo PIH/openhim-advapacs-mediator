@@ -43,8 +43,8 @@ beforeEach(() => {
   process.env.OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID = TYPE_UUID;
   process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM = PAT_SYS;
   process.env.OPENMRS_RESULTS_CHANNEL_URL = 'http://openhim:5001/openmrs';
+  process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM = ACC_SYS;
   process.env.ADVAPACS_PRACTITIONER_IDENTIFIER_SYSTEM = PRAC_SYS;
-  delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
   importStudy.mockResolvedValue({ outcome: 'CREATED' });
   importReport.mockResolvedValue({ outcome: 'CREATED' });
 });
@@ -462,6 +462,12 @@ describe('failures and ordering', () => {
   test('rejects when ADVAPACS_PATIENT_IDENTIFIER_SYSTEM is unset', async () => {
     delete process.env.ADVAPACS_PATIENT_IDENTIFIER_SYSTEM;
     await expect(handleEvent(studyEvent)).rejects.toThrow('ADVAPACS_PATIENT_IDENTIFIER_SYSTEM');
+    expect(readResource).not.toHaveBeenCalled();
+  });
+
+  test('rejects when ADVAPACS_ACCESSION_NUMBER_SYSTEM is unset', async () => {
+    delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    await expect(handleEvent(studyEvent)).rejects.toThrow('ADVAPACS_ACCESSION_NUMBER_SYSTEM');
     expect(readResource).not.toHaveBeenCalled();
   });
 

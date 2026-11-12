@@ -4,7 +4,7 @@ describe('identifiers', () => {
 
   beforeEach(() => {
     jest.resetModules();
-    delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM = DEFAULT_SYSTEM;
     delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
     identifiers = require('../../src/lib/identifiers');
   });
@@ -14,8 +14,13 @@ describe('identifiers', () => {
     delete process.env.ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM;
   });
 
-  it('defaults the placer order number system', () => {
-    expect(identifiers.placerOrderNumberSystem()).toBe('http://www.pih.org/identifiers/lesotho/radiology-order-number');
+  it('has no default placer order number system: unset is a configuration error', () => {
+    expect(() => identifiers.placerOrderNumberSystem()).toThrow('ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM is not configured');
+  });
+
+  it('has no default accession number system: unset is a configuration error', () => {
+    delete process.env.ADVAPACS_ACCESSION_NUMBER_SYSTEM;
+    expect(() => identifiers.accessionNumberSystem()).toThrow('ADVAPACS_ACCESSION_NUMBER_SYSTEM is not configured');
   });
 
   it('uses ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM when set', () => {

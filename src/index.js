@@ -19,6 +19,10 @@ function startServer() {
   for (const name of RESULTS_ENV_VARS) {
     if (!process.env[name]) logger.error(`${name} is not set: AdvaPACS results cannot be handed to OpenHIM, so every webhook event will be answered 503`);
   }
+  // Site configuration with no default (see lib/identifiers.js): orders, results or both fail without them.
+  for (const name of ['ADVAPACS_ACCESSION_NUMBER_SYSTEM', 'ADVAPACS_PLACER_ORDER_NUMBER_SYSTEM']) {
+    if (!process.env[name]) logger.error(`${name} is not set: orders sent to AdvaPACS and results from it will fail until it is`);
+  }
   const app = express();
   app.use(bodyParser({ type: ['application/json', 'application/fhir+json'] }));
 

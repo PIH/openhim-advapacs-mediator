@@ -197,6 +197,7 @@ async function processEvent(event) {
       'OPENMRS_PATIENT_IDENTIFIER_TYPE_UUID',
       'ADVAPACS_PATIENT_IDENTIFIER_SYSTEM',
       'OPENMRS_RESULTS_CHANNEL_URL',
+      'ADVAPACS_ACCESSION_NUMBER_SYSTEM',
     ]) {
       if (!process.env[name]) throw new Error(`${name} is not configured`);
     }
