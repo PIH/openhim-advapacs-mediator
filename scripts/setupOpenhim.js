@@ -208,8 +208,13 @@ async function main() {
   } else {
     console.log('OPENHIM_RESULTS_CLIENT_PASSWORD not set: no results client, so the OpenMRS results channel accepts no one');
   }
+  const missingOpenmrs = ['OPENMRS_BASE_URL', 'OPENMRS_USERNAME', 'OPENMRS_PASSWORD'].filter((v) => !process.env[v]);
+  if (missingOpenmrs.length) {
+    console.log(`${missingOpenmrs.join(', ')} not set: not provisioning the "${RESULTS_CHANNEL_NAME}" channel`);
+  }
   const channels = mediatorConfig.defaultChannelConfig
     .filter((c) => CHANNEL_NAMES.includes(c.name))
+    .filter((c) => c.name !== RESULTS_CHANNEL_NAME || !missingOpenmrs.length)
     .map(withRealAdvapacsRoute)
     .map(withRealOpenmrsRoute)
     .map(withWebhookClient)

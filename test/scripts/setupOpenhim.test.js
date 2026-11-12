@@ -121,4 +121,18 @@ describe('setupOpenhim', () => {
     expect(posted('/clients').map((c) => c.clientID)).toContain('mediator-results');
     expect(posted('/channels').find((c) => c.name === RESULTS_CHANNEL).allow).toEqual(['mediator-results']);
   });
+
+  test.each(['OPENMRS_BASE_URL', 'OPENMRS_USERNAME', 'OPENMRS_PASSWORD'])(
+    'skips the results channel and names the variable when %s is unset', async (name) => {
+      delete process.env[name];
+
+      await main();
+
+      const names = posted('/channels').map((c) => c.name);
+      expect(names).not.toContain(RESULTS_CHANNEL);
+      expect(names).toEqual(expect.arrayContaining(['OpenMRS to Mediator Order Push', WEBHOOK_CHANNEL]));
+      const logged = console.log.mock.calls.map(([m]) => m).join('\n');
+      expect(logged).toContain(name);
+      expect(logged).not.toContain('openmrs-password');
+    });
 });
