@@ -540,9 +540,11 @@ npm test
 
 Unit tests only — every HTTP call (to OpenMRS, AdvaPACS/OpenHIM's outbound
 channel) is mocked with Jest, so nothing needs to be running: no Docker, no
-OpenHIM, no OpenMRS. Covers `orderRelay.js`, `advapacsClient.js`,
-`openmrsClient.js`, `orderPoller.js`, `modalityMap.js`, `routes/serviceRequest.js`,
-`routes/health.js`, `routes/advapacsWebhook.js`, `routes/advapacsEvent.js`, `lib/eventQueueClient.js`, `lib/openhimResponse.js` and `scripts/setupOpenhim.js`'s
+OpenHIM, no OpenMRS. Covers `orderRelay.js`, `orderBundle.js`, `siteLocation.js`,
+`modalityMap.js`, `orderPoller.js`, `advapacsClient.js`, `openmrsClient.js`, `openhimClient.js`,
+`sharedSecretAuth.js`, `identifiers.js`, `resultHandler.js`, `resultMapper.js`,
+`radiologyappClient.js`, `eventQueueClient.js`, `openhimResponse.js`, `routes/serviceRequest.js`,
+`routes/health.js`, `routes/advapacsWebhook.js`, `routes/advapacsEvent.js` and `scripts/setupOpenhim.js`'s
 Clients and channels. Does **not** cover `src/index.js`'s route-mounting/ingestion-mode
 logic (no testable seam without a refactor) — see
 `docs/superpowers/specs/2026-08-06-test-suite-design.md` for why.
