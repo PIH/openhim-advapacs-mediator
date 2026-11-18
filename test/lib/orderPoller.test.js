@@ -2,6 +2,7 @@ jest.mock('axios');
 jest.mock('../../src/lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../src/lib/openmrsClient');
 jest.mock('../../src/lib/modalityMap');
+jest.mock('../../src/lib/radiologyOrders');
 
 let axios;
 
@@ -9,6 +10,7 @@ describe('orderPoller', () => {
   let openmrs;
   let orderPoller;
   let modalityMap;
+  let radiologyOrders;
 
   beforeEach(() => {
     jest.resetModules();
@@ -24,6 +26,8 @@ describe('orderPoller', () => {
     openmrs = require('../../src/lib/openmrsClient');
     modalityMap = require('../../src/lib/modalityMap');
     modalityMap.isLoaded.mockReturnValue(true);
+    radiologyOrders = require('../../src/lib/radiologyOrders');
+    radiologyOrders.isRadiologyOrder.mockResolvedValue(true);
     orderPoller = require('../../src/lib/orderPoller');
   });
 
@@ -165,6 +169,46 @@ describe('orderPoller', () => {
     expect(axios.post).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
     expect(openmrs.searchServiceRequests).toHaveBeenNthCalledWith(2, {
+      lastUpdatedAfter: '2026-08-05T12:00:00.000Z'
+    });
+  });
+
+  test('pollOnce submits only the radiology orders (LSO-263)', async () => {
+    const rad = { resourceType: 'ServiceRequest', id: 'rad1' };
+    const lab = { resourceType: 'ServiceRequest', id: 'lab1' };
+    openmrs.searchServiceRequests.mockResolvedValue({ entry: [{ resource: rad }, { resource: lab }] });
+    radiologyOrders.isRadiologyOrder.mockImplementation(async (id) => id === 'rad1');
+    axios.post.mockResolvedValue({ status: 200 });
+
+    await orderPoller.pollOnce();
+
+    expect(radiologyOrders.isRadiologyOrder).toHaveBeenCalledWith('rad1');
+    expect(radiologyOrders.isRadiologyOrder).toHaveBeenCalledWith('lab1');
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.post.mock.calls[0][1].entry[0].resource).toBe(rad);
+  });
+
+  test("pollOnce posts nothing, and keeps the cursor, when an order's type can't be read", async () => {
+    const sr1 = { resourceType: 'ServiceRequest', id: 'sr1' };
+    const sr2 = { resourceType: 'ServiceRequest', id: 'sr2' };
+    jest.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [] });
+    await orderPoller.pollOnce();
+
+    jest.setSystemTime(new Date('2026-08-05T12:00:15.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [{ resource: sr1 }, { resource: sr2 }] });
+    radiologyOrders.isRadiologyOrder
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error('OpenMRS unreachable'));
+    await orderPoller.pollOnce();
+    expect(axios.post).not.toHaveBeenCalled();
+
+    jest.setSystemTime(new Date('2026-08-05T12:00:30.000Z'));
+    openmrs.searchServiceRequests.mockResolvedValueOnce({ entry: [] });
+    await orderPoller.pollOnce();
+
+    // the failed window is searched again, from the last poll that got through
+    expect(openmrs.searchServiceRequests).toHaveBeenNthCalledWith(3, {
       lastUpdatedAfter: '2026-08-05T12:00:00.000Z'
     });
   });

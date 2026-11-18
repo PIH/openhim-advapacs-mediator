@@ -3,6 +3,7 @@ const logger = require('./logger');
 const openmrs = require('./openmrsClient');
 const { splitOrders } = require('./orderBundle');
 const modalityMap = require('./modalityMap');
+const radiologyOrders = require('./radiologyOrders');
 
 let lastPolledAt = null;
 let timer = null;
@@ -21,7 +22,11 @@ let timer = null;
  * is submitted and the cursor stays where it was, so the next poll searches the
  * same window again (submitting some orders twice would duplicate them in AdvaPACS).
  *
- * Submits each polled order, as an order Bundle (see orderBundle.js), to
+ * Only radiology orders are submitted (LSO-263): the search returns every test order, lab orders
+ * included, and FHIR2 can't filter them by order type, so each order's type is looked up in OpenMRS
+ * (see radiologyOrders.js). TODO LSO-312: search for radiology orders only, once FHIR2 can.
+ *
+ * Submits each polled radiology order, as an order Bundle (see orderBundle.js), to
  * OpenHIM's inbound channel (same urlPattern routes/serviceRequest.js's push
  * endpoint sits behind) rather than calling orderRelay.js directly, so this hop
  * is logged/retryable as an OpenHIM transaction instead of being invisible
@@ -42,6 +47,23 @@ async function pollOnce() {
     }));
   } catch (err) {
     logger.error('OpenMRS ServiceRequest poll failed', { error: err.message });
+    return;
+  }
+
+  // Before the cursor moves: if any order's type can't be read, nothing is submitted and the next poll
+  // searches the same window again, so no radiology order is skipped. TODO LSO-312: drop this lookup
+  // and filter in the search instead, once FHIR2 sends the order type as ServiceRequest.category
+  const polledCount = orders.length;
+  try {
+    const radiology = [];
+    for (const order of orders) {
+      if (await radiologyOrders.isRadiologyOrder(order.entry[0].resource.id)) radiology.push(order);
+    }
+    orders = radiology;
+  } catch (err) {
+    logger.error('Could not tell which polled ServiceRequests are radiology orders; will search the same window again', {
+      error: err.message
+    });
     return;
   }
   lastPolledAt = polledAt;
@@ -71,8 +93,8 @@ async function pollOnce() {
     }
   }
 
-  if (orders.length) {
-    logger.info(`Polled ${orders.length} ServiceRequest(s) from OpenMRS`);
+  if (polledCount) {
+    logger.info(`Polled ${polledCount} ServiceRequest(s) from OpenMRS, ${orders.length} of them radiology orders`);
   }
 }
 

@@ -167,11 +167,38 @@ function nextStartIndex(page) {
   return Number(startIndex);
 }
 
+/**
+ * The value of an OpenMRS global property (system setting), or undefined if it isn't set. Rejects if
+ * the request fails, including a 404 when the property doesn't exist. Used by lib/radiologyOrders.js
+ * to read radiologyapp's radiology order type.
+ */
+async function getGlobalPropertyValue(property) {
+  const { data } = await restClient.get(`/systemsetting/${encodeURIComponent(property)}`, {
+    params: { v: 'custom:(property,value)' }
+  });
+  const value = data && typeof data.value === 'string' ? data.value.trim() : '';
+  return value || undefined;
+}
+
+/**
+ * The uuid of an order's order type, by order uuid (which is also its ServiceRequest id), or undefined
+ * if the order has none. Rejects if the request fails. Used by lib/radiologyOrders.js, as FHIR2's
+ * ServiceRequest doesn't carry the order type (LSO-312).
+ */
+async function getOrderTypeUuid(orderUuid) {
+  const { data } = await restClient.get(`/order/${encodeURIComponent(orderUuid)}`, {
+    params: { v: 'custom:(uuid,orderType:(uuid))' }
+  });
+  return (data && data.orderType && data.orderType.uuid) || undefined;
+}
+
 module.exports = {
   getResource,
   createResource,
   updateServiceRequestStatus,
   searchServiceRequests,
   getOrderBundle,
-  getConceptsMappedToSource
+  getConceptsMappedToSource,
+  getGlobalPropertyValue,
+  getOrderTypeUuid
 };
