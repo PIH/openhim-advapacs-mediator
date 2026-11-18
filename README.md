@@ -382,6 +382,19 @@ OpenMRS doesn't push events anywhere on its own. Pick one, set via
   endpoint's `metadata`) — this poller intentionally doesn't filter by
   `status` for that reason.
 
+  **Only radiology orders are sent** (LSO-263). FHIR2 turns every test order
+  into a ServiceRequest, lab orders included. Its ServiceRequest doesn't carry
+  the order type and can't be searched by it. So the poller looks up each
+  polled order's type through OpenMRS's REST API (`order/{uuid}`) and only
+  submits orders whose type matches radiologyapp's `emr.radiologyTestOrderType`
+  global property. That property is read once (`systemsetting/...`). Lab orders
+  never reach OpenHIM. If the property isn't set or a lookup fails, nothing is
+  submitted and the next poll searches the same window again. The user
+  `OPENMRS_USERNAME` needs the `Get Orders` and `Get Global Properties`
+  privileges for this. LSO-312 asks FHIR2 to send the order type as
+  `ServiceRequest.category`; once that ships, the poller can search for
+  radiology orders only and drop the per-order lookups.
+
 ## Building the mediator image locally
 
 ```bash

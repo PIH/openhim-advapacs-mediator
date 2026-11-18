@@ -237,4 +237,48 @@ describe('openmrsClient', () => {
       await expect(openmrs.getConceptsMappedToSource('DCM')).rejects.toThrow(/repeats/);
     });
   });
+  describe('getGlobalPropertyValue', () => {
+    test('GETs the system setting by name and returns its trimmed value', async () => {
+      mockClient.get.mockResolvedValue({ data: { property: 'emr.radiologyTestOrderType', value: ' rad-type ' } });
+
+      await expect(openmrs.getGlobalPropertyValue('emr.radiologyTestOrderType')).resolves.toBe('rad-type');
+      expect(mockClient.get).toHaveBeenCalledWith('/systemsetting/emr.radiologyTestOrderType', {
+        params: { v: 'custom:(property,value)' }
+      });
+    });
+
+    test('returns undefined for a blank or missing value', async () => {
+      mockClient.get.mockResolvedValueOnce({ data: { value: '  ' } }).mockResolvedValueOnce({ data: { value: null } });
+
+      await expect(openmrs.getGlobalPropertyValue('x')).resolves.toBeUndefined();
+      await expect(openmrs.getGlobalPropertyValue('x')).resolves.toBeUndefined();
+    });
+
+    test('rejects when the request fails', async () => {
+      mockClient.get.mockRejectedValue(new Error('Request failed with status code 404'));
+
+      await expect(openmrs.getGlobalPropertyValue('x')).rejects.toThrow('404');
+    });
+  });
+
+  describe('getOrderTypeUuid', () => {
+    test("GETs the order by uuid and returns its order type's uuid", async () => {
+      mockClient.get.mockResolvedValue({ data: { uuid: 'o1', orderType: { uuid: 'rad-type' } } });
+
+      await expect(openmrs.getOrderTypeUuid('o1')).resolves.toBe('rad-type');
+      expect(mockClient.get).toHaveBeenCalledWith('/order/o1', { params: { v: 'custom:(uuid,orderType:(uuid))' } });
+    });
+
+    test('returns undefined for an order with no order type', async () => {
+      mockClient.get.mockResolvedValue({ data: { uuid: 'o1', orderType: null } });
+
+      await expect(openmrs.getOrderTypeUuid('o1')).resolves.toBeUndefined();
+    });
+
+    test('rejects when the request fails', async () => {
+      mockClient.get.mockRejectedValue(new Error('Request failed with status code 500'));
+
+      await expect(openmrs.getOrderTypeUuid('o1')).rejects.toThrow('500');
+    });
+  });
 });
